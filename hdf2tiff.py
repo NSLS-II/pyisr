@@ -37,27 +37,55 @@ def read_hdf5_tiff_data(directory):
 
     return tiff_data_dict
 
-def save_tiff_data(tiff_data, output_dir, original_filename):
+def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True):
     """
-    Save the TIFF data as an image file in a specified directory using tifffile.
+    Saves the given TIFF data as an image file in the specified output directory.
+    
+    The function tries to be flexible by handling all numeric data types and value ranges.
+    If 'normalize' is True, the data will be scaled to cover the full 16-bit range (0 to 65535).
+    Otherwise, the original data (or its converted equivalent to an appropriate integer type) is saved.
     
     Parameters:
-    tiff_data (numpy array): The TIFF data array.
-    output_dir (str): The directory to save the TIFF file.
-    original_filename (str): The original HDF5 filename, used for naming the output TIFF file.
+        tiff_data (numpy array): The TIFF data array.
+        output_dir (str): The directory to save the TIFF file.
+        original_filename (str): The original HDF5 filename, used for naming the output TIFF file.
+        normalize (bool): Whether to normalize the data to the 16-bit range.
     """
-    # Remove the extension from the original filename and append .tiff
+    # Create output filename with .tiff extension
     output_filename = os.path.splitext(original_filename)[0] + ".tiff"
     output_path = os.path.join(output_dir, output_filename)
     
-    # Check if the data type is string/unicode or numeric
+    # Ensure the data is numeric
     if tiff_data.dtype.kind in {'U', 'S'}:
         print(f"Data is not numerical: {tiff_data.dtype}. Skipping conversion for {original_filename}.")
+        return
+    
+    # If normalization is enabled, scale the data into the full 16-bit range
+    if normalize:
+        data_min = tiff_data.min()
+        data_max = tiff_data.max()
+        if data_max > data_min:
+            norm_data = (tiff_data - data_min) / (data_max - data_min)
+        else:
+            norm_data = np.zeros_like(tiff_data)
+        # Scale normalized data to 16-bit
+        out_data = (norm_data * 65535).astype(np.uint16)
     else:
-        # Save the TIFF using tifffile
-        tifffile.imwrite(output_path, tiff_data.astype('uint8'))  # Convert to uint8 or other valid format
+        # If not normalizing, try to choose a smart conversion:
+        if np.issubdtype(tiff_data.dtype, np.integer):
+            out_data = tiff_data  # use original integer values
+        elif np.issubdtype(tiff_data.dtype, np.floating):
+            # For floats, you could preserve values by converting to float32;
+            # note that many TIFF readers expect integers, so converting may be preferable.
+            out_data = tiff_data.astype(np.float32)
+        else:
+            out_data = tiff_data
+
+    try:
+        tifffile.imwrite(output_path, out_data)
         print(f"Saved TIFF to {output_path}")
-        
+    except Exception as e:
+        print(f"Failed to save {output_path}: {e}")        
         
 def hdf2tiff(input_directory: str, output_directory: str):
     """

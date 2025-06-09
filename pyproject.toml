@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-rsm-plugin"
+version = "0.1.0"
+description = "A Napari plugin for reciprocal space mapping (RSM) processing from TIFF files."
+readme = "README.md"
+authors = [
+  { name = "Xiaogang Yang", email = "yangxg@bnl.gov" }
+]
+license = { file = "LICENSE" }
+dependencies = [
+  "napari>=0.4.12",
+  "magicgui",
+  "numpy"
+]
+
+[project.urls]
+Homepage = "https://github.com/NSLS-II/pyisr.git"
+
+[tool.setuptools]
+py-modules = ["napari_rsm"]
+
+[project.entry-points."napari.experimental_provide_dock_widget"]
+napari_rsm_plugin = "napari_rsm:napari_experimental_provide_dock_widget"
