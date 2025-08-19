@@ -25,3 +25,11 @@ py-modules = ["napari_rsm"]
 
 [project.entry-points."napari.experimental_provide_dock_widget"]
 napari_rsm_plugin = "napari_rsm:napari_experimental_provide_dock_widget"
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+napari-rsm-plugin = { path = ".", editable = true }
+
+[tool.pixi.tasks]
