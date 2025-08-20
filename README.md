@@ -36,7 +36,7 @@ Note: VTK/PyVista may require an OpenGL-capable system. On headless Linux, use O
 ### HDF5 → TIFF
 ```python
 # Inside `pixi shell`
-from hdf2tiff import hdf2tiff
+from rsm3d.data_io import hdf2tiff
 
 input_directory = "/path/to/input/hdf5"
 output_directory = "/path/to/output/tiff"
@@ -92,4 +92,4 @@ MIT License. See LICENSE.
 
 ## Contributing
 Issues and pull requests are welcome:
-https://github.com/NSLS
+https://github.com/NSLS-
