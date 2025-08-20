@@ -93,10 +93,6 @@ from rsm3d.data_io import write_rsm_volume_to_vtk
 write_rsm_volume_to_vtk(rsm_q, edges_q, "/path/to/output/rsm_q.vtk")
 ```
 
-### Napari (optional)
-```bash
-pixi run python -c "import napari; print(napari.__version__)"
-```
 
 ## Dependencies (managed by Pixi)
 - Core: numpy, pandas, dask
@@ -104,11 +100,7 @@ pixi run python -c "import napari; print(napari.__version__)"
 - Geometry: hklpy, ophyd
 - Viz: matplotlib, pyvista, vtk, napari (optional)
 
-If you prefer pip:
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install numpy h5py tifffile matplotlib pyvista imageio pandas dask vtk hklpy ophyd napari
-```
+
 
 ## Tips
 - Large datasets: prefer `pixi shell` + Python scripts over notebooks for memory control.
