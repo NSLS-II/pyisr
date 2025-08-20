@@ -77,11 +77,6 @@ write_rsm_volume_to_vtk(rsm_hkl, edges_hkl, "/path/to/output/rsm_hkl.vtk")
 - Geometry: hklpy, ophyd
 - Viz: matplotlib, pyvista, vtk
 
-If you prefer pip:
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install numpy pandas dask h5py tifffile imageio matplotlib pyvista vtk hklpy ophyd
-```
 
 ## Tips
 - Large datasets: prefer `pixi shell` + Python scripts over notebooks.
@@ -92,4 +87,4 @@ MIT License. See LICENSE.
 
 ## Contributing
 Issues and pull requests are welcome:
-https://github.com/NSLS-
+https://github.com/NSLS-II
