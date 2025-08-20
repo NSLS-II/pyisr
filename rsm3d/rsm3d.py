@@ -1141,3 +1141,37 @@ class RSMBuilder:
             mean_rsm = H_sum / H_cnt
             mean_rsm[np.isnan(mean_rsm)] = 0
         return mean_rsm, edges
+    def regrid_auto(self, space='q', grid_shape=(200, 200, 200), method='mean'):
+        """
+        Auto-compute grid ranges from Q_samp or hkl and regrid.
+
+        Parameters:
+            space: 'q' or 'hkl'
+            grid_shape: (nx, ny, nz)
+            method: 'sum' or 'mean'
+        """
+        if not hasattr(self, 'Q_samp'):
+            raise RuntimeError("Call compute_full() first.")
+
+        if space == 'q':
+            arr = self.Q_samp
+            ranges = (
+                (arr[..., 0].min(), arr[..., 0].max()),
+                (arr[..., 1].min(), arr[..., 1].max()),
+                (arr[..., 2].min(), arr[..., 2].max()),
+            )
+            self.setup_grid(ranges, grid_shape)
+        elif space == 'hkl':
+            if not hasattr(self, 'hkl'):
+                raise RuntimeError("HKL not available. Call compute_full().")
+            arr = self.hkl
+            ranges = (
+                (arr[..., 0].min(), arr[..., 0].max()),
+                (arr[..., 1].min(), arr[..., 1].max()),
+                (arr[..., 2].min(), arr[..., 2].max()),
+            )
+            self.setup_hkl_grid(ranges, grid_shape)
+        else:
+            raise ValueError("space must be 'q' or 'hkl'")
+
+        return self.regrid_intensity(method=method, space=space)
