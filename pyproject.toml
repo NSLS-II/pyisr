@@ -1,35 +1,65 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pyisr"
 version = "0.1.0"
-description = "A Napari plugin for reciprocal space mapping (RSM) processing from TIFF files."
+description = "Tools for reciprocal space mapping (RSM) from TIFF files with hklpy (E4CV) geometry."
 readme = "README.md"
 authors = [
   { name = "Xiaogang Yang", email = "yangxg@bnl.gov" }
 ]
 license = { file = "LICENSE" }
+requires-python = ">=3.9"
 dependencies = [
-  "napari>=0.4.12",
-  "magicgui",
-  "numpy"
+  "numpy",
+  "pandas",
+  "dask",
+  "scipy",
+  "h5py",
+  "tifffile",
+  "imageio",
+  "matplotlib",
+  "pyvista",
+  "vtk",
+  "hklpy",
+  "ophyd"
 ]
 
 [project.urls]
-Homepage = "https://github.com/NSLS-II/pyisr.git"
+Homepage = "https://github.com/NSLS-II/pyisr"
 
-[tool.setuptools]
-py-modules = ["napari_rsm"]
+[tool.hatch.build.targets.wheel]
+packages = ["rsm3d"]
 
-[project.entry-points."napari.experimental_provide_dock_widget"]
-napari_rsm_plugin = "napari_rsm:napari_experimental_provide_dock_widget"
-[tool.pixi.workspace]
+# ---------------- Pixi configuration ----------------
+# Minimal single-project manifest. Dependencies and tasks are top-level tables.
+[tool.pixi.project]
+name = "pyisr"
+description = "PyISR dev environment"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
+[tool.pixi.dependencies]
+python = "3.11"
+numpy = "*"
+pandas = "*"
+dask = "*"
+scipy = "*"
+h5py = "*"
+hdf5plugin = "*"
+tifffile = "*"
+imageio = "*"
+matplotlib = "*"
+pyvista = "*"
+vtk = "*"
+hklpy = "*"
+ophyd = "*"
+ipykernel = "*"
+
 [tool.pixi.pypi-dependencies]
-napari-rsm-plugin = { path = ".", editable = true }
+pyisr = { path = ".", editable = true }
 
 [tool.pixi.tasks]
+check = "python -c \"import numpy as np; print('PyISR env OK, numpy', np.__version__)\""

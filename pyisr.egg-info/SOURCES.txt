@@ -1,0 +1,9 @@
+LICENSE
+README.md
+pyproject.toml
+pyisr.egg-info/PKG-INFO
+pyisr.egg-info/SOURCES.txt
+pyisr.egg-info/dependency_links.txt
+pyisr.egg-info/entry_points.txt
+pyisr.egg-info/requires.txt
+pyisr.egg-info/top_level.txt

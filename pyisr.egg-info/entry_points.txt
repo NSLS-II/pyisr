@@ -1,0 +1,2 @@
+[napari.experimental_provide_dock_widget]
+napari_rsm_plugin = napari_rsm:napari_experimental_provide_dock_widget
