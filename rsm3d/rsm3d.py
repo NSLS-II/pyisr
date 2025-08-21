@@ -636,39 +636,39 @@ def crop_by_positions(Q_samp, hkl, intensity, z_bound, y_bound, x_bound):
 
 
 
-import os
-import numpy as np
-import pandas as pd
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import griddata
+# import os
+# import numpy as np
+# import pandas as pd
+# from scipy.spatial.transform import Rotation as R
+# from scipy.interpolate import griddata
 
-# Import your spec parser and data loader modules
-from rsm3d.spec_parser import SpecParser
-from rsm3d.data_io import ReadData
+# # Import your spec parser and data loader modules
+# from rsm3d.spec_parser import SpecParser
+# from rsm3d.data_io import ReadData
 
-def pixel2q(i, j, setup):
-    # ... existing function code ...
-    x = (i - setup.xcenter) * setup.pitch
-    y = (j - setup.ycenter) * setup.pitch
-    D  = setup.distance
-    wl = setup.wavelength
-    k0 = 2 * np.pi / wl
-    two_theta = np.arctan2(np.hypot(x, y), D)
-    eta       = np.arctan2(y, x)
-    sin2t = np.sin(2 * two_theta)
-    kfx   = k0 * sin2t * np.cos(eta)
-    kfy   = k0 * sin2t * np.sin(eta)
-    kfz   = k0 * np.cos(2 * two_theta)
-    Qx = kfx
-    Qy = kfy
-    Qz = kfz - k0
-    return np.stack((Qx, Qy, Qz), axis=-1)
+# def pixel2q(i, j, setup):
+#     # ... existing function code ...
+#     x = (i - setup.xcenter) * setup.pitch
+#     y = (j - setup.ycenter) * setup.pitch
+#     D  = setup.distance
+#     wl = setup.wavelength
+#     k0 = 2 * np.pi / wl
+#     two_theta = np.arctan2(np.hypot(x, y), D)
+#     eta       = np.arctan2(y, x)
+#     sin2t = np.sin(2 * two_theta)
+#     kfx   = k0 * sin2t * np.cos(eta)
+#     kfy   = k0 * sin2t * np.sin(eta)
+#     kfz   = k0 * np.cos(2 * two_theta)
+#     Qx = kfx
+#     Qy = kfy
+#     Qz = kfz - k0
+#     return np.stack((Qx, Qy, Qz), axis=-1)
 
-def q2hkl(Q_samp, UB):
-    UB_inv = np.linalg.inv(UB)
-    flat   = Q_samp.reshape(-1, 3)
-    hkl    = flat @ UB_inv.T
-    return hkl.reshape(Q_samp.shape)
+# def q2hkl(Q_samp, UB):
+#     UB_inv = np.linalg.inv(UB)
+#     flat   = Q_samp.reshape(-1, 3)
+#     hkl    = flat @ UB_inv.T
+#     return hkl.reshape(Q_samp.shape)
 
 # class RSMBuilder:
 #     """
