@@ -57,6 +57,7 @@ vtk = "*"
 hklpy = "*"
 ophyd = "*"
 ipykernel = "*"
+tiled = ">=0.1.0b35,<0.2"
 
 [tool.pixi.pypi-dependencies]
 pyisr = { path = ".", editable = true }
