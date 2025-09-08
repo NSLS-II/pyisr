@@ -597,42 +597,42 @@
 
 #     return Q_crop, hkl_crop, I_crop
 
-def crop_by_positions(Q_samp, hkl, intensity, z_bound, y_bound, x_bound):
-    """
-    Crop Q_samp, hkl, and intensity arrays given explicit z, y, and x boundaries.
+# def crop_by_positions(Q_samp, hkl, intensity, z_bound, y_bound, x_bound):
+    # """
+    # Crop Q_samp, hkl, and intensity arrays given explicit z, y, and x boundaries.
 
-    Parameters:
-        Q_samp    : ndarray, shape (Nframes, Ny, Mx, 3)
-        hkl       : ndarray, shape (Nframes, Ny, Mx, 3)
-        intensity : ndarray, shape (Nframes, Ny, Mx)
-        z_bound   : tuple (z0, z1) inclusive frame boundaries
-        y_bound   : tuple (y0, y1) inclusive row boundaries
-        x_bound   : tuple (x0, x1) inclusive column boundaries
+    # Parameters:
+    #     Q_samp    : ndarray, shape (Nframes, Ny, Mx, 3)
+    #     hkl       : ndarray, shape (Nframes, Ny, Mx, 3)
+    #     intensity : ndarray, shape (Nframes, Ny, Mx)
+    #     z_bound   : tuple (z0, z1) inclusive frame boundaries
+    #     y_bound   : tuple (y0, y1) inclusive row boundaries
+    #     x_bound   : tuple (x0, x1) inclusive column boundaries
 
-    Returns:
-        Q_crop    : ndarray, cropped Q_samp of shape (z1-z0+1, y1-y0+1, x1-x0+1, 3)
-        hkl_crop  : ndarray, cropped hkl of same shape
-        I_crop    : ndarray, cropped intensity of shape (z1-z0+1, y1-y0+1, x1-x0+1)
-        bounds    : (z_bound, y_bound, x_bound)
-    """
-    z0, z1 = z_bound
-    y0, y1 = y_bound
-    x0, x1 = x_bound
+    # Returns:
+    #     Q_crop    : ndarray, cropped Q_samp of shape (z1-z0+1, y1-y0+1, x1-x0+1, 3)
+    #     hkl_crop  : ndarray, cropped hkl of same shape
+    #     I_crop    : ndarray, cropped intensity of shape (z1-z0+1, y1-y0+1, x1-x0+1)
+    #     bounds    : (z_bound, y_bound, x_bound)
+    # """
+    # z0, z1 = z_bound
+    # y0, y1 = y_bound
+    # x0, x1 = x_bound
 
-    # Validate boundaries for each dimension
-    Nframes, Ny, Mx = intensity.shape
-    if not (0 <= z0 <= z1 < Nframes):
-        raise ValueError(f"z_bound out of range: z[{z0},{z1}], number of frames {Nframes}")
-    if not (0 <= y0 <= y1 < Ny):
-        raise ValueError(f"y_bound out of range: y[{y0},{y1}], array shape {intensity.shape}")
-    if not (0 <= x0 <= x1 < Mx):
-        raise ValueError(f"x_bound out of range: x[{x0},{x1}], array shape {intensity.shape}")
+    # # Validate boundaries for each dimension
+    # Nframes, Ny, Mx = intensity.shape
+    # if not (0 <= z0 <= z1 < Nframes):
+    #     raise ValueError(f"z_bound out of range: z[{z0},{z1}], number of frames {Nframes}")
+    # if not (0 <= y0 <= y1 < Ny):
+    #     raise ValueError(f"y_bound out of range: y[{y0},{y1}], array shape {intensity.shape}")
+    # if not (0 <= x0 <= x1 < Mx):
+    #     raise ValueError(f"x_bound out of range: x[{x0},{x1}], array shape {intensity.shape}")
 
-    Q_crop   = Q_samp[z0:z1+1, y0:y1+1, x0:x1+1, :]
-    hkl_crop = hkl[z0:z1+1, y0:y1+1, x0:x1+1, :]
-    I_crop   = intensity[z0:z1+1, y0:y1+1, x0:x1+1]
+    # Q_crop   = Q_samp[z0:z1+1, y0:y1+1, x0:x1+1, :]
+    # hkl_crop = hkl[z0:z1+1, y0:y1+1, x0:x1+1, :]
+    # I_crop   = intensity[z0:z1+1, y0:y1+1, x0:x1+1]
 
-    return Q_crop, hkl_crop, I_crop
+    # return Q_crop, hkl_crop, I_crop
 
 
 
