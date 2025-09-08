@@ -58,6 +58,9 @@ hklpy = "*"
 ophyd = "*"
 ipykernel = "*"
 tiled = ">=0.1.0b35,<0.2"
+pyfai = ">=2025.3.0,<2026"
+xrayutilities = ">=1.7.10,<2"
+napari = ">=0.6.4,<0.7"
 
 [tool.pixi.pypi-dependencies]
 pyisr = { path = ".", editable = true }

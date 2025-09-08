@@ -752,7 +752,7 @@ class ExperimentSetup:
 
     def __repr__(self):
         return (
-            f"ExperimentSetup(distance={self.distance} mm, pitch={self.pitch} µm, "
+            f"ExperimentSetup(distance={self.distance} m, pitch={self.pitch} m, "
             f"ycenter={self.ycenter}, xcenter={self.xcenter}, xpixels={self.xpixels}, "
             f"ypixels={self.ypixels}, wavelength={self.wavelength} Å, phi={self.phi}°, "
             f"theta={self.theta}°, dtheta={self.dtheta}°, energy={self.energy} eV)"
