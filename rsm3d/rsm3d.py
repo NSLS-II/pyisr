@@ -1453,18 +1453,18 @@
 #         return grid_data, grid_axes
 
 
-import os
-import numpy as np
-import pandas as pd
-from scipy.spatial.transform import Rotation as R  # (not used for Q_samp now)
-from scipy.interpolate import griddata
-from rsm3d.spec_parser import SpecParser
-from rsm3d.data_io import ReadData
+# import os
+# import numpy as np
+# import pandas as pd
+# from scipy.spatial.transform import Rotation as R  # (not used for Q_samp now)
+# from scipy.interpolate import griddata
+# from rsm3d.spec_parser import SpecParser
+# from rsm3d.data_io import ReadData
 # Import the hklpy diffractometer engine.
-import gi
-gi.require_version("Hkl", "5.0")
-from hkl import E4CV
-from ophyd import Component as Cpt, PseudoSingle, SoftPositioner
+# import gi
+# gi.require_version("Hkl", "5.0")
+# from hkl import E4CV
+# from ophyd import Component as Cpt, PseudoSingle, SoftPositioner
 
 # # Define a FourCircle diffractometer using hklpy.
 # class FourCircle(E4CV):

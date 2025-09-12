@@ -7,63 +7,58 @@ name = "pyisr"
 version = "0.1.0"
 description = "Tools for reciprocal space mapping (RSM) from TIFF files with hklpy (E4CV) geometry."
 readme = "README.md"
+requires-python = ">=3.9"
 authors = [
   { name = "Xiaogang Yang", email = "yangxg@bnl.gov" }
 ]
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
-dependencies = [
-  "numpy",
-  "pandas",
-  "dask",
-  "scipy",
-  "h5py",
-  "tifffile",
-  "imageio",
-  "matplotlib",
-  "pyvista",
-  "vtk",
-  "hklpy",
-  "ophyd"
-]
 
-[project.urls]
-Homepage = "https://github.com/NSLS-II/pyisr"
+# register your napari dock-widget hook
+[project.entry-points."napari.experimental_provide_dock_widget"]
+pyisr_rsm = "napari_rsm:napari_experimental_provide_dock_widget"
 
-[tool.hatch.build.targets.wheel]
-packages = ["rsm3d"]
+# tell Hatchling which files to include in every build/editable install
+[tool.hatch.build]
+# include all top-level .py modules
+include = ["*.py"]
 
-# ---------------- Pixi configuration ----------------
-# Minimal single-project manifest. Dependencies and tasks are top-level tables.
+# no [project].dependencies section
+
+# ------------ Pixi dev‐env config ------------
 [tool.pixi.project]
-name = "pyisr"
-description = "PyISR dev environment"
+name = "pyisr-dev"
+description = "PyISR development environment"
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 
 [tool.pixi.dependencies]
-python = "3.11.*"
-numpy = "*"
-pandas = "*"
-dask = "*"
-scipy = "*"
-h5py = "*"
-hdf5plugin = "*"
-tifffile = "*"
-imageio = "*"
-matplotlib = "*"
-pyvista = "*"
-vtk = "*"
-hklpy = "*"
-ophyd = "*"
+python    = "3.11.*"
+numpy     = "*"
+pandas    = "*"
+dask      = "*"
+scipy     = "*"
+h5py      = "*"
+hdf5plugin= "*"
+tifffile  = "*"
+imageio   = "*"
+matplotlib= "*"
+pyvista   = "*"
+vtk       = "*"
+ophyd     = "*"
 ipykernel = "*"
-tiled = ">=0.1.0b35,<0.2"
-pyfai = ">=2025.3.0,<2026"
-xrayutilities = ">=1.7.10,<2"
-napari = ">=0.6.4,<0.7"
+tiled     = "*"
+napari    = "*"
+magicgui  = "*"
+pyside6   = "*"
 
+
+
+# pip‐only packages or your editable install
 [tool.pixi.pypi-dependencies]
+xrayutilities = "*" 
+
 pyisr = { path = ".", editable = true }
 
 [tool.pixi.tasks]
-check = "python -c \"import numpy as np; print('PyISR env OK, numpy', np.__version__)\""
+develop = "pip install -e ."
+check = "python -c \"import numpy as np; print('Env OK, numpy', np.__version__)\""
