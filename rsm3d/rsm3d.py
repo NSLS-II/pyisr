@@ -3594,10 +3594,10 @@ class RSMBuilder:
         # Angles we pass are always (phi, chi, omega) to match these lists.
         if fourc_mode == "ZXZ":
             # φ about Z, χ about X, ω about Z
-            sampleAxis = ['z+', 'x+', 'z+']
+            sampleAxis = ['z-', 'x+', 'z+']
         else:  # "ZYX"
             # φ about Z, χ about Y, ω about X
-            sampleAxis = ['z+', 'y+', 'x+']
+            sampleAxis = ['z-', 'y+', 'x+']
 
         # beam along +Y
         r_i = (0, 1, 0)
@@ -3607,7 +3607,7 @@ class RSMBuilder:
         # Dir1 (slow axis) = rows = 'z+' (Nch1=ny, cch1=y0)
         # Dir2 (fast axis) = cols = 'x+' (Nch2=nx, cch2=x0)
         self.qconv.init_area(
-            'z+', 'x+',
+            'z-', 'x+',
             cch1=y0, cch2=x0,
             Nch1=ny, Nch2=nx,
             distance=dist_m,
@@ -3642,15 +3642,16 @@ class RSMBuilder:
 
         UB2pi_default = (self.UB if self.ub_includes_2pi else (_TWO_PI * self.UB))
 
-        for i, row in df.iterrows():
-            I = np.asarray(row["intensity"], dtype=self.dtype, order="C")
+        for idx, row in enumerate(df.itertuples(index=False)):
+            # intensity array
+            I = np.asarray(row.intensity, dtype=self.dtype, order="C")
             if I.shape != (ny, nx):
                 raise ValueError(f"Frame shape {I.shape} != expected {(ny, nx)}")
 
             # pull motors with mapping
-            omega = float(row[self.motor_map["omega"]])
-            chi   = float(row[self.motor_map["chi"]])
-            phi   = float(row[self.motor_map["phi"]])
+            omega = float(getattr(row, self.motor_map["omega"]))
+            chi   = float(getattr(row, self.motor_map["chi"]))
+            phi   = float(getattr(row, self.motor_map["phi"]))
 
             # Q in Å^-1: area() returns tuple of arrays (qx, qy, qz), each (ny, nx)
             # IMPORTANT: pass angles in the order of sampleAxis → (phi, chi, omega)
@@ -3658,7 +3659,7 @@ class RSMBuilder:
             Qf = np.stack((qx, qy, qz), axis=-1).astype(self.dtype, copy=False)
 
             # HKL via UB (2π convention for XU). Allow per-frame UB override.
-            UB_row = row.get("ub", None)
+            UB_row = getattr(row, "ub", None)
             UB2pi = np.asarray(UB_row, dtype=np.float64) if UB_row is not None else UB2pi_default
             if not self.ub_includes_2pi and UB_row is not None:
                 UB2pi = _TWO_PI * UB2pi
@@ -3666,17 +3667,20 @@ class RSMBuilder:
             h, k, l = self.qconv.area(phi, chi, omega, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
             HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
 
-            Q_samp[i] = Qf
-            HKL[i]    = HKLf
-            Icube[i]  = I
+            Q_samp[idx] = Qf
+            HKL[idx]    = HKLf
+            Icube[idx]  = I
 
-            if verbose and (i % 10 == 0 or i == Nf - 1):
-                print(f"Processed {i+1}/{Nf} frames", end="\r")
-
-        self.Q_samp = Q_samp
-        self.hkl    = HKL
+            if verbose and (idx % 10 == 0 or idx == Nf - 1):
+                print(f"Processed {idx+1}/{Nf} frames", end="\r")
+       # make sure we actually filled every slot
+        if idx != Nf - 1:
+            raise RuntimeError(f"compute_full only processed {idx+1}/{Nf} frames")
+        self.Q_samp   = Q_samp
+        self.hkl      = HKL
         self.intensity = Icube
         return Q_samp, HKL, Icube
+
     def regrid_xu(
         self,
         *,
@@ -3688,8 +3692,7 @@ class RSMBuilder:
         normalize: str = "mean",          # "mean" → averaged; "sum" → accumulated
         stream: bool = False              # iterate frame-by-frame to save RAM
     ):
-        import xrayutilities as xu
-
+     
         assert space.lower() in ("q", "hkl")
         nx, ny, nz = map(int, grid_shape)
         arr = self.Q_samp if space.lower() == "q" else self.hkl
