@@ -6788,7 +6788,7 @@ packages:
 - pypi: ./
   name: pyisr
   version: 0.1.0
-  sha256: a3d6c15a8f7ce7e96f9499371d99d52c40ae83d59e76757b6fcb6e5f660413ca
+  sha256: b2dc20a7d5bbd677cc27e05738ba04b997c7fed2ed04d3f72689ba229c9c8146
   requires_dist:
   - numpy
   - pandas
