@@ -727,28 +727,30 @@ class ExperimentSetup:
     Encapsulates the experimental geometry and detector parameters.
     """
     def __init__(self,
-                 distance=781.05,
-                 pitch=0.75,
+                 distance=781.05*1e-3,  # convert mm to m
+                 pitch=75*1e-6,    # convert µm to m
                  ycenter=257,
                  xcenter=515,
+                #  ycenter=400,
+                #  xcenter=515,
                  xpixels=1030,
                  ypixels=514,
-                 wavelength=0.283383,
+                #  wavelength=0.283383,
                  phi=0.0,
                  theta=15.3069,
                  dtheta=0.04,
                  energy=11470.0):
-        self.distance   = distance
-        self.pitch      = pitch
+        self.distance   = distance 
+        self.pitch      = pitch 
         self.ycenter    = ycenter
         self.xcenter    = xcenter
         self.xpixels    = xpixels
         self.ypixels    = ypixels
-        self.wavelength = wavelength
+        # self.wavelength = wavelength
         self.phi        = phi
         self.theta      = theta
         self.dtheta     = dtheta
-        self.energy     = energy
+        self.energy_keV     = energy * 1e-3
 
     def __repr__(self):
         return (

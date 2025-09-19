@@ -1,131 +1,494 @@
-import napari
+# 
+
+# rsm_napari_viewer.py
+
+from __future__ import annotations
 import numpy as np
+from typing import Optional, Tuple, Iterable, Dict, Any
 
-def volume_from_grid_axes(grid, axes):
-    xax, yax, zax = [np.asarray(a) for a in axes]
-    nx, ny, nz = len(xax), len(yax), len(zax)
-    if grid.shape != (nx, ny, nz):
-        raise ValueError(f"grid shape {grid.shape} != ({nx},{ny},{nz})")
-    vol = grid.transpose(2,1,0).copy()  # (Z,Y,X)
-    def _avg_step(a):
-        return float(np.diff(a).mean()) if len(a) > 1 else 1.0
-    dx, dy, dz = _avg_step(xax), _avg_step(yax), _avg_step(zax)
-    translate = (float(zax[0]), float(yax[0]), float(xax[0]))
-    scale     = (dz, dy, dx)
-    is_uniform = (
-        np.allclose(np.diff(xax), dx) and
-        np.allclose(np.diff(yax), dy) and
-        np.allclose(np.diff(zax), dz)
-    )
-    return vol, scale, translate, is_uniform
+try:
+    import napari  # type: ignore
+except Exception as e:
+    raise ImportError("napari must be installed to use RSMNapariViewer. `pip install napari`") from e
 
-def log1p_clip(a):
-    a = np.asarray(a)
-    return np.log1p(np.maximum(a, 0.0))
-
-def index_to_axis_value(ax, idx):
-    n = len(ax)
-    if n == 0:
-        return np.nan
-    if idx <= 0:
-        return float(ax[0])
-    if idx >= n - 1:
-        return float(ax[-1])
-    i0 = int(np.floor(idx))
-    t  = float(idx - i0)
-    return float((1 - t) * ax[i0] + t * ax[i0 + 1])
 
 class RSMNapariViewer:
     """
-    Callable viewer for RSM volumes, suitable for Jupyter.
+    Robust napari viewer for 3D reciprocal-space maps (HKL or Q).
 
     Parameters
     ----------
-    grid : 3D numpy array, shape (nx,ny,nz)
-    axes : tuple of 3 arrays (xax, yax, zax)
-    raw_intensity : optional 3D or 4D array for raw frames (time,z,y,x)
-    """
-    def __init__(self, grid, axes, raw_intensity=None):
-        self.grid = grid
-        self.axes = axes
-        self.raw  = raw_intensity
-        self.viewer = None
+    grid : (nx, ny, nz) ndarray (float or int)
+        Gridded intensity volume in X-Y-Z order (not napari order).
+    axes : tuple(list/ndarray, list/ndarray, list/ndarray)
+        (xax, yax, zax) 1D arrays of coordinates for each axis. Can be non-uniform
+        and can be ascending or descending (will be normalized).
+    space : {"hkl","q"}
+        Labeling/units convenience. "hkl" -> (H,K,L), unit ""; "q" -> (Qx,Qy,Qz), unit "Å⁻¹".
+    name : str
+        Base layer name for the napari image.
+    log_view : bool
+        Apply log1p for visualization (does not modify source grid).
+    contrast_percentiles : tuple(float, float)
+        Percentile bounds for initial contrast limits.
+    cmap : str
+        Colormap name (e.g., "viridis", "magma").
+    rendering : str
+        3D rendering mode; one of {"attenuated_mip","mip","translucent"} (fallback if unavailable).
+    viewer_kwargs : dict
+        Extra kwargs passed to napari.Viewer(...).
 
-    def __call__(self, display_3d=True, use_log=True):
+    Notes
+    -----
+    - Ensures full 3D display: sets `viewer.dims.ndisplay=3`, `layer.depiction='volume'` when available.
+    - Computes a linear world transform (scale, translate) using average spacing even if axes are non-uniform.
+      Exact coordinate readouts use the *actual* axes via interpolation.
+    """
+
+    # ------------------------------ construction ------------------------------
+    def __init__(
+        self,
+        grid: np.ndarray,
+        axes: Tuple[Iterable[float], Iterable[float], Iterable[float]],
+        *,
+        space: str = "hkl",
+        name: str = "RSM",
+        log_view: bool = True,
+        contrast_percentiles: Tuple[float, float] = (1.0, 99.8),
+        cmap: str = "viridis",
+        rendering: str = "attenuated_mip",
+        viewer_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._validate_grid_axes(grid, axes)
+        self.grid, (self.xax, self.yax, self.zax) = self._ensure_ascending(grid, axes)
+
+        # store input meta
+        self.space = space.lower()
+        if self.space not in {"hkl", "q"}:
+            raise ValueError("space must be 'hkl' or 'q'")
+        self.name = name
+        self.log_view = bool(log_view)
+        self.contrast_percentiles = contrast_percentiles
+        self.cmap = cmap
+        self.rendering = rendering
+        self.viewer_kwargs = viewer_kwargs or {}
+
+        # build napari volume + transform
+        self.volume, self.scale, self.translate, self.is_uniform = self._volume_from_grid_axes(
+            self.grid, (self.xax, self.yax, self.zax)
+        )
+
+        # napari objects (populated in launch)
+        self.viewer: Optional["napari.Viewer"] = None
+        self.img_layer = None
+        self._hud_enabled = True
+
+    # ------------------------------ public API --------------------------------
+    def launch(self) -> "napari.Viewer":
+        """Create the napari viewer and show the full volume with UI niceties."""
+        v = napari.Viewer(title=f"{self.name} viewer", **self.viewer_kwargs)
+        v.dims.ndisplay = 3  # force 3D
+
+        data = self._log1p_clip(self.volume) if self.log_view else self.volume
+        lo, hi = self._robust_percentiles(data, self.contrast_percentiles)
+
+        layer = v.add_image(
+            data,
+            name=f"{self.name} ({'log1p' if self.log_view else 'linear'})",
+            colormap=self.cmap,
+            scale=self.scale,          # (Z,Y,X)
+            translate=self.translate,  # (Z,Y,X)
+            contrast_limits=(float(lo), float(hi)),
+        )
+
+        # Force volume depiction + 3D renderer if available
+        self._force_volume(layer)
+
+        # Nice camera pose
+        try:
+            v.reset_view()
+            if hasattr(v, "camera"):
+                # Provide an oblique angle so it's clearly 3D
+                v.camera.angles = (30, 30, 0)  # yaw, pitch, roll (deg)
+                v.camera.zoom = 1.0
+        except Exception:
+            pass
+
+        # UI niceties
+        v.axes.visible = True
+        v.axes.colored = True
+        v.axes.arrows = True
+        v.scale_bar.visible = True
+        if self.space == "q":
+            v.scale_bar.unit = "Å⁻¹"
+            v.dims.axis_labels = ("Qz", "Qy", "Qx")  # (Z,Y,X)
+        else:
+            v.scale_bar.unit = ""
+            v.dims.axis_labels = ("L", "K", "H")
+
+        # Outline & corners; very light overlays
+        self._add_outline_and_corners(v)
+
+        # Axes vectors
+        self._add_axes_vectors(v)
+
+        # HUD (coords + intensity)
+        self._install_hud(v, layer)
+
+        self.viewer = v
+        self.img_layer = layer
+        return self
+
+    def add_grid_overlay(
+        self,
+        spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        *,
+        thickness_vox: int = 1,
+        opacity: float = 0.25,
+        color: str = "white",
+        name: str = "grid-planes",
+        max_planes_per_axis: int = 200,
+    ) -> None:
         """
-        Launch the Napari viewer (in-process) from Jupyter.
+        Add faint grid planes every `spacing` in world coordinates.
 
         Parameters
         ----------
-        display_3d : bool
-            True for 3D volume rendering, False for 2D slice view.
-        use_log : bool
-            Apply log1p to the RSM volume.
+        spacing : (dx, dy, dz) in world units (HKL or Å⁻¹)
+        thickness_vox : int
+            Thickness in voxels (approx; planes are snapped to nearest indices).
+        opacity : float
+        color : str
+        name : str
+        max_planes_per_axis : int
+            Safety cap to avoid accidental huge overlays.
         """
-        vol, scale, translate, is_uniform = volume_from_grid_axes(self.grid, self.axes)
-        data = log1p_clip(vol) if use_log else vol
+        self._require_viewer()
 
-        # create the viewer
-        ndisp = 3 if display_3d else 2
-        v = napari.Viewer(ndisplay=ndisp, title="RSM viewer")
+        # (nx, ny, nz) from the *grid*, but volume is (nz,ny,nx) -> keep index logic on grid
+        nx, ny, nz = self.grid.shape
+        xax, yax, zax = self.xax, self.yax, self.zax
 
-        # add the RSM volume
-        img = v.add_image(
-            data,
-            name="RSM (log1p)" if use_log else "RSM",
-            scale=scale,
-            translate=translate,
-            rendering="attenuated_mip" if display_3d else None,
-            blending="translucent" if display_3d else "additive"
+        # Pick index positions where axis crosses multiples of spacing
+        def nearest_indices(ax: np.ndarray, step: float) -> np.ndarray:
+            if step <= 0 or ax.size < 2:
+                return np.array([], dtype=int)
+            start = np.ceil(ax[0] / step) * step
+            coords = np.arange(start, ax[-1] + 0.5 * step, step)
+            idx = np.searchsorted(ax, coords)
+            idx = idx[(idx >= 0) & (idx < ax.size)]
+            return np.unique(idx)
+
+        ix = nearest_indices(xax, spacing[0])
+        iy = nearest_indices(yax, spacing[1])
+        iz = nearest_indices(zax, spacing[2])
+
+        # Safety caps
+        if ix.size > max_planes_per_axis or iy.size > max_planes_per_axis or iz.size > max_planes_per_axis:
+            raise ValueError("Too many grid planes — reduce spacing or increase max_planes_per_axis.")
+
+        # Build a sparse binary overlay (nx,ny,nz)
+        mask = np.zeros((nx, ny, nz), dtype=np.uint8)
+        half = max(int(thickness_vox) // 2, 0)
+
+        for k in ix:
+            k0, k1 = max(0, k - half), min(nx, k + half + 1)
+            mask[k0:k1, :, :] = 1
+        for k in iy:
+            k0, k1 = max(0, k - half), min(ny, k + half + 1)
+            mask[:, k0:k1, :] = 1
+        for k in iz:
+            k0, k1 = max(0, k - half), min(nz, k + half + 1)
+            mask[:, :, k0:k1] = 1
+
+        # Convert to napari order (Z,Y,X) and add as another image layer
+        mask_vol = np.ascontiguousarray(mask.transpose(2, 1, 0))
+        
+        layer = self.viewer.add_image(
+            mask_vol,
+            name=name,
+            opacity=float(opacity),
+            blending="additive",
+            colormap=color,
+            scale=self.scale,
+            translate=self.translate,
+            contrast_limits=(0, 1),
+            rendering="translucent",
+        )
+        # set interpolation on the layer if supported
+        try:
+            layer.interpolation = "nearest"
+        except Exception:
+            pass
+
+
+    def flip_axis(self, axis: str) -> None:
+        """
+        Flip one axis ('x','y','z') in both grid and axes, and update the view.
+        """
+        self._require_viewer()
+        axis = axis.lower()
+        if axis not in {"x", "y", "z"}:
+            raise ValueError("axis must be 'x', 'y', or 'z'")
+
+        # Flip grid + axis arrays (grid is in (nx,ny,nz))
+        if axis == "x":
+            self.grid = self.grid[::-1, :, :]
+            self.xax = self.xax[::-1].copy()
+        elif axis == "y":
+            self.grid = self.grid[:, ::-1, :]
+            self.yax = self.yax[::-1].copy()
+        else:
+            self.grid = self.grid[:, :, ::-1]
+            self.zax = self.zax[::-1].copy()
+
+        # Rebuild volume + transform and refresh the image layer
+        self.volume, self.scale, self.translate, self.is_uniform = self._volume_from_grid_axes(
+            self.grid, (self.xax, self.yax, self.zax)
+        )
+        data = self._log1p_clip(self.volume) if self.log_view else self.volume
+        if self.img_layer is not None:
+            self.img_layer.data = data
+            self.img_layer.scale = self.scale
+            self.img_layer.translate = self.translate
+            self._force_volume(self.img_layer)
+
+    # ------------------------------ internals ---------------------------------
+    @staticmethod
+    def _validate_grid_axes(grid: np.ndarray, axes) -> None:
+        if not isinstance(grid, np.ndarray) or grid.ndim != 3:
+            raise ValueError("grid must be a 3D numpy array with shape (nx, ny, nz).")
+        xax, yax, zax = axes
+        xax = np.asarray(xax); yax = np.asarray(yax); zax = np.asarray(zax)
+        if xax.ndim != 1 or yax.ndim != 1 or zax.ndim != 1:
+            raise ValueError("Each axis must be 1D.")
+        nx, ny, nz = grid.shape
+        if len(xax) != nx or len(yax) != ny or len(zax) != nz:
+            raise ValueError(f"Axis lengths must match grid shape: {(nx,ny,nz)} vs ({len(xax)},{len(yax)},{len(zax)}).")
+
+    @staticmethod
+    def _ensure_ascending(grid: np.ndarray, axes) -> Tuple[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """If any axis is descending, flip both that axis and the corresponding grid dimension."""
+        xax, yax, zax = [np.asarray(a) for a in axes]
+        G = grid
+        if xax.size > 1 and xax[1] < xax[0]:
+            xax = xax[::-1].copy()
+            G = G[::-1, :, :]
+        if yax.size > 1 and yax[1] < yax[0]:
+            yax = yax[::-1].copy()
+            G = G[:, ::-1, :]
+        if zax.size > 1 and zax[1] < zax[0]:
+            zax = zax[::-1].copy()
+            G = G[:, :, ::-1]
+        return G, (xax, yax, zax)
+
+    @staticmethod
+    def _volume_from_grid_axes(
+        grid: np.ndarray, axes: Tuple[np.ndarray, np.ndarray, np.ndarray]
+    ) -> Tuple[np.ndarray, Tuple[float, float, float], Tuple[float, float, float], bool]:
+        """
+        Convert (nx,ny,nz) + axes -> (nz,ny,nx) for napari with (scale, translate) in (Z,Y,X).
+        Uses average spacing for linear transform; returns is_uniform flag.
+        """
+        xax, yax, zax = axes
+        nx, ny, nz = grid.shape
+        vol = np.ascontiguousarray(grid.transpose(2, 1, 0))  # (Z,Y,X)
+
+        def avg_step(a: np.ndarray) -> float:
+            return float(np.diff(a).mean()) if a.size > 1 else 1.0
+
+        dx, dy, dz = avg_step(xax), avg_step(yax), avg_step(zax)
+        translate = (float(zax[0]), float(yax[0]), float(xax[0]))
+        scale = (dz, dy, dx)
+        is_uniform = (
+            (zax.size < 2 or np.allclose(np.diff(zax), dz, rtol=1e-5, atol=1e-8)) and
+            (yax.size < 2 or np.allclose(np.diff(yax), dy, rtol=1e-5, atol=1e-8)) and
+            (xax.size < 2 or np.allclose(np.diff(xax), dx, rtol=1e-5, atol=1e-8))
+        )
+        return vol, scale, translate, is_uniform
+
+    @staticmethod
+    def _robust_percentiles(a: np.ndarray, prc: Tuple[float, float]) -> Tuple[float, float]:
+        a = a[np.isfinite(a)]
+        if a.size == 0:
+            return (0.0, 1.0)
+        lo, hi = np.percentile(a, prc)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = float(np.min(a)), float(np.max(a))
+            if hi <= lo:
+                hi = lo + 1.0
+        return float(lo), float(hi)
+
+    @staticmethod
+    def _log1p_clip(a: np.ndarray) -> np.ndarray:
+        a = np.asarray(a)
+        return np.log1p(np.maximum(a, 0.0))
+
+    @staticmethod
+    def _index_to_axis_value(ax: np.ndarray, idx: float) -> float:
+        """Map fractional index -> axis value (linear interp between samples)."""
+        n = ax.size
+        if n == 0:
+            return np.nan
+        if idx <= 0:
+            return float(ax[0])
+        if idx >= n - 1:
+            return float(ax[-1])
+        i0 = int(np.floor(idx))
+        t = float(idx - i0)
+        return float((1.0 - t) * ax[i0] + t * ax[i0 + 1])
+
+    def _force_volume(self, layer) -> None:
+        """Ensure 3D volume depiction and a 3D renderer, across napari versions."""
+        # force 3D
+        if self.viewer is not None:
+            self.viewer.dims.ndisplay = 3
+        # set depiction if available
+        try:
+            if hasattr(layer, "depiction"):
+                layer.depiction = "volume"
+        except Exception:
+            pass
+        # set rendering if available
+        try:
+            if hasattr(layer, "rendering"):
+                # If chosen rendering unsupported, napari will fallback; we try preferred order.
+                preferred = [self.rendering, "attenuated_mip", "mip", "translucent"]
+                for r in preferred:
+                    try:
+                        layer.rendering = r
+                        break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    def _add_outline_and_corners(self, v: "napari.Viewer") -> None:
+        # world bounds from axes (already ascending)
+        zmin, zmax = float(self.zax[0]), float(self.zax[-1])
+        ymin, ymax = float(self.yax[0]), float(self.yax[-1])
+        xmin, xmax = float(self.xax[0]), float(self.xax[-1])
+
+        corners_world = np.array([
+            [zmin, ymin, xmin],
+            [zmin, ymin, xmax],
+            [zmin, ymax, xmin],
+            [zmin, ymax, xmax],
+            [zmax, ymin, xmin],
+            [zmax, ymin, xmax],
+            [zmax, ymax, xmin],
+            [zmax, ymax, xmax],
+        ], dtype=float)
+
+        # tiny corner markers: ~0.15 voxel in each axis (use isotropic size -> better compatibility)
+        voxel = np.array(self.scale, dtype=float)  # (dz, dy, dx)
+        corner_size = float(min(voxel) * 0.15)
+        v.add_points(
+            corners_world,
+            name="Outline corners",
+            size=np.full(8, corner_size),
+            face_color="red",
+            # edge_width=0,
+            opacity=0.9,
+            blending="additive",
         )
 
-        # optionally add raw‐frame stack as time series
+        box_edges = np.array([
+            [0,1],[0,2],[0,4],
+            [1,3],[1,5],
+            [2,3],[2,6],
+            [3,7],
+            [4,5],[4,6],
+            [5,7],
+            [6,7],
+        ], dtype=int)
+        edge_segments = [corners_world[e] for e in box_edges]
 
-        # draw thin outline of the volume in world coords
-        zax, yax, xax = self.axes
-        corners = np.array([
-            [float(zax[0]), float(yax[0]), float(xax[0])],
-            [float(zax[0]), float(yax[0]), float(xax[-1])],
-            [float(zax[0]), float(yax[-1]), float(xax[0])],
-            [float(zax[0]), float(yax[-1]), float(xax[-1])],
-            [float(zax[-1]), float(yax[0]), float(xax[0])],
-            [float(zax[-1]), float(yax[0]), float(xax[-1])],
-            [float(zax[-1]), float(yax[-1]), float(xax[0])],
-            [float(zax[-1]), float(yax[-1]), float(xax[-1])]
-        ])
-        edges = [
-            (0,1),(0,2),(0,4),(1,3),(1,5),
-            (2,3),(2,6),(3,7),(4,5),(4,6),
-            (5,7),(6,7)
-        ]
-          # need to index rows by list, not tuple
-        segs = [corners[list(e)] for e in edges]
+        kwargs = dict(
+                shape_type="line",
+                edge_color="yellow",
+                edge_width=0.05,        # pixel hairline
+                opacity=0.9,
+                blending="additive",
+                name="Outline box",
+            )
+        v.add_shapes(edge_segments, **kwargs)
 
-        v.add_shapes(segs, shape_type="line", edge_color="yellow", edge_width=0.1)
-        # live‐cursor callback: show H,K,L and I under cursor
-        def on_move(viewer, event):
-            pos = viewer.cursor.position
-            if pos is None:
+
+    def _add_axes_vectors(self, v: "napari.Viewer") -> None:
+        # use 10% of largest world extent
+        Lx = float(self.xax[-1] - self.xax[0])
+        Ly = float(self.yax[-1] - self.yax[0])
+        Lz = float(self.zax[-1] - self.zax[0])
+        axes_len = 0.10 * max(Lx, Ly, Lz)
+
+        origin = np.array([float(self.zax[0]), float(self.yax[0]), float(self.xax[0])], dtype=float)
+        vectors = np.stack([
+            np.vstack([origin, origin + np.array([axes_len, 0, 0])]),  # +Z
+            np.vstack([origin, origin + np.array([0, axes_len, 0])]),  # +Y
+            np.vstack([origin, origin + np.array([0, 0, axes_len])]),  # +X
+        ], axis=0)
+
+        kwargs = dict(
+            name="World axes",
+            edge_color=["cyan", "lime", "magenta"],
+            edge_width=0.75,             # thin lines (pixels)
+            blending="translucent_no_depth",
+        )
+        try:
+            v.add_vectors(vectors, **kwargs)
+        except TypeError:
+            # Some versions use `width` instead of edge_width
+            kwargs.pop("edge_width", None)
+            kwargs["width"] = 0.75
+            v.add_vectors(vectors, **kwargs)
+
+    def _install_hud(self, v: "napari.Viewer", layer) -> None:
+        # Closure captures self, layer, and axes
+        def on_mouse_move(viewer, event):
+            if not self._hud_enabled:
                 return
-            zi, yi, xi = img.world_to_data(pos)
-            zi_i, yi_i, xi_i = map(int, np.round([zi, yi, xi]))
-            I = float(vol[zi_i, yi_i, xi_i]) if (0 <= zi_i < vol.shape[0]) else np.nan
-            H = index_to_axis_value(xax, xi)
-            K = index_to_axis_value(yax, yi)
-            L = index_to_axis_value(zax, zi)
-            text = f"H={H:.4f} K={K:.4f} L={L:.4f} I={I:.3g}"
-            if hasattr(viewer, "text_overlay") and viewer.text_overlay is not None:
-                ov = viewer.text_overlay
-                ov.text = text
-                ov.visible = True
-                ov.position = "top_left"
+            pos_world = viewer.cursor.position
+            if pos_world is None:
+                return
+            # data indices (Z,Y,X)
+            zi, yi, xi = layer.world_to_data(pos_world)
+            # Intensity from *linear* volume (not log)
+            I = np.nan
+            zi_i, yi_i, xi_i = int(np.round(zi)), int(np.round(yi)), int(np.round(xi))
+            if (0 <= zi_i < self.volume.shape[0]) and (0 <= yi_i < self.volume.shape[1]) and (0 <= xi_i < self.volume.shape[2]):
+                I = float(self.volume[zi_i, yi_i, xi_i])
+
+            # exact coords from axes (HKL or Q)
+            H = self._index_to_axis_value(self.xax, xi)
+            K = self._index_to_axis_value(self.yax, yi)
+            L = self._index_to_axis_value(self.zax, zi)
+            if self.space == "q":
+                text = f"Qx={H:.4f} Å⁻¹   Qy={K:.4f} Å⁻¹   Qz={L:.4f} Å⁻¹    I={I:.3g}"
+            else:
+                text = f"H={H:.4f}   K={K:.4f}   L={L:.4f}    I={I:.3g}"
+
+            # text overlay if available, else print
+            overlay = getattr(viewer, "text_overlay", None)
+            if overlay is not None:
+                overlay.visible = True
+                overlay.position = 'top_left'
+                overlay.color = 'white'
+                overlay.font_size = 12
+                overlay.text = text
             else:
                 print(text, end="\r")
 
-        v.mouse_move_callbacks.append(on_move)
-        self.viewer = v
+        v.mouse_move_callbacks.append(on_mouse_move)
 
-        # actually start the Qt event loop so the Napari window pops up
-        napari.run()
+        @v.bind_key('C')
+        def _toggle_coords(viewer):
+            """Toggle HUD overlay with 'C' key."""
+            self._hud_enabled = not self._hud_enabled
+            overlay = getattr(viewer, "text_overlay", None)
+            if overlay is not None:
+                overlay.visible = self._hud_enabled
 
-        return v
+    def _require_viewer(self) -> None:
+        if self.viewer is None:
+            raise RuntimeError("Call launch() before adding overlays or flipping axes.")
