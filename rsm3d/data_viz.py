@@ -380,9 +380,10 @@ class RSMNapariViewer:
             [zmax, ymax, xmax],
         ], dtype=float)
 
-        # tiny corner markers: ~0.15 voxel in each axis (use isotropic size -> better compatibility)
+        # tiny corner markers: take 15% of the *mean* voxel size (isotropic)
         voxel = np.array(self.scale, dtype=float)  # (dz, dy, dx)
-        corner_size = float(min(voxel) * 0.15)
+        mean_vox = float(np.mean(voxel))
+        corner_size = mean_vox * 0.15
         v.add_points(
             corners_world,
             name="Outline corners",
@@ -404,19 +405,37 @@ class RSMNapariViewer:
         ], dtype=int)
         edge_segments = [corners_world[e] for e in box_edges]
 
+       # frame edges: 5% of mean voxel size
+        edge_width = mean_vox * 0.05
         kwargs = dict(
-                shape_type="line",
-                edge_color="yellow",
-                edge_width=0.05,        # pixel hairline
-                opacity=0.9,
-                blending="additive",
-                name="Outline box",
-            )
+               shape_type="line",
+               edge_color="yellow",
+               edge_width=edge_width,
+               opacity=0.9,
+               blending="additive",
+               name="Outline box",
+           )
         v.add_shapes(edge_segments, **kwargs)
+        
+         # ----------------------------------------------------------------
+        # annotate each corner with its (H,K,L) world‐coords via a Points‐layer text
+        labels = [f"H={h:.3f}, K={k:.3f}, L={l:.3f}" for l, k, h in corners_world]
+        pts = v.add_points(
+            corners_world,
+            name="Corner labels",
+            text=labels,                    # per‐point label
+            face_color="white",             # text color
+            # text_color="white",
+            # text_size=mean_vox * 0.1,       # scale text by voxel size
+            size=0.0,                       # hide the marker itself
+            blending="additive",
+        )
+
+
 
 
     def _add_axes_vectors(self, v: "napari.Viewer") -> None:
-        # use 10% of largest world extent
+        # use 10% of largest world extent for vector length
         Lx = float(self.xax[-1] - self.xax[0])
         Ly = float(self.yax[-1] - self.yax[0])
         Lz = float(self.zax[-1] - self.zax[0])
@@ -429,11 +448,14 @@ class RSMNapariViewer:
             np.vstack([origin, origin + np.array([0, 0, axes_len])]),  # +X
         ], axis=0)
 
+       # line width ~5% of mean voxel size
+        mean_vox = float(np.mean(self.scale))
+        vec_width = mean_vox * 0.05
         kwargs = dict(
-            name="World axes",
-            edge_color=["cyan", "lime", "magenta"],
-            edge_width=0.75,             # thin lines (pixels)
-            blending="translucent_no_depth",
+           name="World axes",
+           edge_color=["cyan", "lime", "magenta"],
+           edge_width=vec_width,
+           blending="translucent_no_depth",
         )
         try:
             v.add_vectors(vectors, **kwargs)

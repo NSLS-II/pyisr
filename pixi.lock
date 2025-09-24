@@ -329,6 +329,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/matplotlib-base-3.10.6-py311h0f3be63_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/matplotlib-inline-0.1.7-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/more-itertools-10.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/mpc-1.3.1-h24ddda3_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/mpfr-4.2.1-h90cbb55_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/mpg123-1.32.9-hc50e24c_0.conda
@@ -487,6 +488,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tornado-6.5.2-py311h49ec1c0_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.67.1-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/traitlets-5.14.3-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-3.12.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-client-3.10.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-common-1.0.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-components-2.5.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-server-3.6.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtk-2.9.1-pyhb419c8b_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtklocal-0.15.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vuetify-3.0.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/trio-0.31.0-py311h3d13dd8_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-0.16.1-pyhc167863_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-slim-0.16.1-pyhe01879c_0.conda
@@ -837,6 +846,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/matplotlib-base-3.10.6-py311h48d7e91_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/matplotlib-inline-0.1.7-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/more-itertools-10.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/mpc-1.3.1-h9d8efa1_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/mpfr-4.2.1-haed47dc_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/msgpack-python-1.1.1-py311hd4d69bb_1.conda
@@ -992,6 +1002,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/tornado-6.5.2-py311h13e5629_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.67.1-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/traitlets-5.14.3-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-3.12.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-client-3.10.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-common-1.0.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-components-2.5.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-server-3.6.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtk-2.9.1-pyhb419c8b_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtklocal-0.15.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vuetify-3.0.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/trio-0.31.0-py311hdb0ec4c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-0.17.4-pyh66367de_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-slim-0.17.4-pyhcf101f3_0.conda
@@ -1319,6 +1337,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/matplotlib-base-3.10.6-py311h66dac5a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/matplotlib-inline-0.1.7-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/more-itertools-10.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/mpc-1.3.1-h8f1351a_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/mpfr-4.2.1-hb693164_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/msgpack-python-1.1.1-py311h57a9ea7_1.conda
@@ -1474,6 +1493,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tornado-6.5.2-py311h3696347_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.67.1-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/traitlets-5.14.3-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-3.12.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-client-3.10.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-common-1.0.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-components-2.5.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-server-3.6.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtk-2.9.1-pyhb419c8b_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtklocal-0.15.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vuetify-3.0.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/trio-0.31.0-py311hf339f9d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-0.17.4-pyh66367de_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-slim-0.17.4-pyhcf101f3_0.conda
@@ -1771,6 +1798,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/matplotlib-inline-0.1.7-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/mkl-2024.2.2-h57928b3_16.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/more-itertools-10.8.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/mpc-1.3.1-h72bc38f_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/mpfr-4.2.1-hbc20e70_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/msgpack-python-1.1.1-py311h3fd045d_1.conda
@@ -1919,6 +1947,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/tornado-6.5.2-py311h3485c13_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.67.1-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/traitlets-5.14.3-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-3.12.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-client-3.10.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-common-1.0.1-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-components-2.5.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-server-3.6.0-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtk-2.9.1-pyhb419c8b_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtklocal-0.15.2-pyhd8ed1ab_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/trame-vuetify-3.0.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/trio-0.31.0-py311h34909f0_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-0.17.4-pyh66367de_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typer-slim-0.17.4-pyhcf101f3_0.conda
@@ -13948,6 +13984,17 @@ packages:
   purls: []
   size: 103088799
   timestamp: 1753975600547
+- conda: https://conda.anaconda.org/conda-forge/noarch/more-itertools-10.8.0-pyhd8ed1ab_0.conda
+  sha256: fabe81c8f8f3e1d0ef227fc1306526c76189b3f1175f12302c707e0972dd707c
+  md5: d7620a15dc400b448e1c88a981b23ddd
+  depends:
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/more-itertools?source=hash-mapping
+  size: 65129
+  timestamp: 1756855971031
 - conda: https://conda.anaconda.org/conda-forge/linux-64/mpc-1.3.1-h24ddda3_1.conda
   sha256: 1bf794ddf2c8b3a3e14ae182577c624fa92dea975537accff4bc7e5fea085212
   md5: aa14b9a5196a6d8dd364164b7ce56acf
@@ -16890,7 +16937,7 @@ packages:
 - pypi: ./
   name: pyisr
   version: 0.1.0
-  sha256: 9f78e7c9a73aa2b3e5c6e0ea1b73315f7aac3f4e1a6f880b6f83b2c63b5d9932
+  sha256: 616cbc7456b12d6f2f388eef1ebc48d58ec90cca0c144dd9b01294d37a262075
   requires_python: '>=3.9'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/pyopengl-3.1.10-pyh534df25_2.conda
@@ -19670,6 +19717,106 @@ packages:
   - pkg:pypi/traitlets?source=hash-mapping
   size: 110051
   timestamp: 1733367480074
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-3.12.0-pyhd8ed1ab_0.conda
+  sha256: 9d8cdf5055be5e6082bc4351e7c63b699ec63c34e60453e39e0d465990916390
+  md5: 60866a971f6c54eebc87d80edebce8e1
+  depends:
+  - python >=3.9
+  - pyyaml
+  - trame-client >=3.10.1
+  - trame-common >=1
+  - trame-server >=3.4
+  license: Apache-2.0
+  license_family: APACHE
+  purls:
+  - pkg:pypi/trame?source=hash-mapping
+  size: 28180
+  timestamp: 1755621060056
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-client-3.10.2-pyhd8ed1ab_0.conda
+  sha256: 9e3b2c243ee1e88daddf1b3c2d852dfd244f365d958e0fe2c15d9d02085fa3b9
+  md5: 4408c1e8e3c2fd3fea8a7b14d02f2173
+  depends:
+  - python >=3.10
+  - trame-common
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/trame-client?source=hash-mapping
+  size: 204423
+  timestamp: 1757660896010
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-common-1.0.1-pyhd8ed1ab_0.conda
+  sha256: 602d102ea37d42b4b88b4f62d83c5220d6082d9e1d5c403fd67f0625f6d999c7
+  md5: 5656e0b540303a7dbe6c70a705d0e499
+  depends:
+  - python >=3.9
+  license: Apache-2.0
+  license_family: APACHE
+  purls:
+  - pkg:pypi/trame-common?source=hash-mapping
+  size: 24628
+  timestamp: 1753750555881
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-components-2.5.0-pyhd8ed1ab_0.conda
+  sha256: 770519055e6354bb3ea8cafdc2d796d32595fe0bfde943634ddcc73da7a09492
+  md5: 7f82a1b31338507cadd294bb5ff23c8c
+  depends:
+  - python >=3.9
+  - trame-client
+  license: Apache-2.0
+  license_family: APACHE
+  purls:
+  - pkg:pypi/trame-components?source=hash-mapping
+  size: 80790
+  timestamp: 1748623557778
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-server-3.6.0-pyhd8ed1ab_0.conda
+  sha256: 227120bda3e013fc1cf6587e998c7e06a1ad8247ab5c428f847bcc8d9fe6e288
+  md5: 42180ed640a71449b1491c6568d0430f
+  depends:
+  - more-itertools
+  - python >=3.9
+  - wslink >=2.2.1
+  license: Apache-2.0
+  license_family: APACHE
+  purls:
+  - pkg:pypi/trame-server?source=hash-mapping
+  size: 40912
+  timestamp: 1754356951953
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtk-2.9.1-pyhb419c8b_0.conda
+  sha256: 18cc8cce1639f196ee2b3a0c21073ef7888ee9c9ab8eba55250fafd44169d7ad
+  md5: d46035b27250dab3dcee9a311b5f5fac
+  depends:
+  - python >=3.9
+  - trame-client
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/trame-vtk?source=hash-mapping
+  size: 560838
+  timestamp: 1753181597975
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-vtklocal-0.15.2-pyhd8ed1ab_0.conda
+  sha256: f1fa0edc420013ca06f5de4065d080c5443dc437e7ea5f9e01b972bcfc4873b1
+  md5: e8bd1db445c6f744d65150cf4bfc440e
+  depends:
+  - python >=3.10
+  - trame
+  - vtk
+  license: Apache-2.0
+  license_family: APACHE
+  purls:
+  - pkg:pypi/trame-vtklocal?source=hash-mapping
+  size: 24450
+  timestamp: 1756220468744
+- conda: https://conda.anaconda.org/conda-forge/noarch/trame-vuetify-3.0.3-pyhd8ed1ab_0.conda
+  sha256: e78847e7fbac5563136886ef9eb1fdc6cd8220fa79fd82cedf559b86f9c6f03e
+  md5: 8c0dec146c78e37fb210db6642438769
+  depends:
+  - python >=3.10
+  - trame-client
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/trame-vuetify?source=hash-mapping
+  size: 2701330
+  timestamp: 1757538628188
 - conda: https://conda.anaconda.org/conda-forge/linux-64/trio-0.31.0-py311h3d13dd8_0.conda
   sha256: da575e48185955d3fd8e71ff04de8f28fbe20111b533e157f759128064b45d3d
   md5: 71d3b2d1ac7226dea1b2bebcb84bdec4

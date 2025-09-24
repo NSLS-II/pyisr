@@ -138,7 +138,7 @@ class RSMBuilder:
         # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
         # dir2 (cols) along +X
         self.qconv.init_area(
-            'z-', 'x+',
+            'z+', 'x+',
             cch1=y0, cch2=x0,
             Nch1=ny, Nch2=nx,
             distance=dist_m,
@@ -185,7 +185,7 @@ class RSMBuilder:
 
         for idx, row in enumerate(df.itertuples(index=False)):
             # intensity array
-            I = np.asarray(row.intensity, dtype=self.dtype, order="C")
+            I = np.asarray(row.intensity, dtype=self.dtype)
             if I.shape != (ny, nx):
                 raise ValueError(f"Frame shape {I.shape} != expected {(ny, nx)}")
 
