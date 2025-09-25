@@ -245,19 +245,28 @@ class RSMBuilder:
     ):
         assert space.lower() in ("q", "hkl")
         nx, ny, nz = map(int, grid_shape)
+        # arr = self.Q_samp if space.lower() == "q" else self.hkl
         arr = self.Q_samp if space.lower() == "q" else self.hkl
+        
+        #+        # ensure we have a (x,y,z) range tuple
+        if ranges is None:
+           ranges = tuple(
+               (float(np.nanmin(arr[..., i])), float(np.nanmax(arr[..., i])))
+               for i in range(3)
+           )
 
+       # build the gridder
         G = (xu.FuzzyGridder3D if fuzzy else xu.Gridder3D)(nx, ny, nz)
-
         if stream:
-            G.KeepData(True)
+           G.KeepData(True)
 
-        if ranges is not None:
-            (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
-            try:
-                G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
-            except TypeError:
-                G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+       # apply the ranges (try fixed=True if supported)
+        (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
+        try:
+           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
+        except TypeError:
+           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+        print(ranges)
 
         if stream:
             for i in range(self.intensity.shape[0]):
@@ -678,66 +687,66 @@ class RSMBuilder:
     # ───────────────────────────────────────────────────────────────────────────
     # Optional NumPy-based regridders (back-compat)
     # ───────────────────────────────────────────────────────────────────────────
-    def setup_grid(self, grid_ranges, grid_shape):
-        self.grid_ranges = grid_ranges
-        self.grid_shape = grid_shape
-        self.edges = [
-            np.linspace(r[0], r[1], grid_shape[i] + 1)
-            for i, r in enumerate(grid_ranges)
-        ]
+    # def setup_grid(self, grid_ranges, grid_shape):
+    #     self.grid_ranges = grid_ranges
+    #     self.grid_shape = grid_shape
+    #     self.edges = [
+    #         np.linspace(r[0], r[1], grid_shape[i] + 1)
+    #         for i, r in enumerate(grid_ranges)
+    #     ]
 
-    def regrid_intensity(self, method='sum', space='q'):
-        if space == 'q':
-            if not hasattr(self, "edges"):
-                raise RuntimeError("Call setup_grid() or regrid_auto(space='q') first.")
-            pts, edges = self.Q_samp.reshape(-1,3), self.edges
-        else:
-            if not hasattr(self, "hkl_edges"):
-                raise RuntimeError("Call regrid_auto(space='hkl') first.")
-            pts, edges = self.hkl.reshape(-1,3), self.hkl_edges
-        vals = self.intensity.ravel().astype(np.float64, copy=False)
-        H_sum, _ = np.histogramdd(pts, bins=edges, weights=vals)
-        if method=='sum':
-            return H_sum.astype(self.dtype, copy=False), edges
-        H_cnt, _ = np.histogramdd(pts, bins=edges)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            Hm = H_sum / H_cnt
-            Hm[~np.isfinite(Hm)] = 0
-        return Hm.astype(self.dtype, copy=False), edges
+    # def regrid_intensity(self, method='sum', space='q'):
+    #     if space == 'q':
+    #         if not hasattr(self, "edges"):
+    #             raise RuntimeError("Call setup_grid() or regrid_auto(space='q') first.")
+    #         pts, edges = self.Q_samp.reshape(-1,3), self.edges
+    #     else:
+    #         if not hasattr(self, "hkl_edges"):
+    #             raise RuntimeError("Call regrid_auto(space='hkl') first.")
+    #         pts, edges = self.hkl.reshape(-1,3), self.hkl_edges
+    #     vals = self.intensity.ravel().astype(np.float64, copy=False)
+    #     H_sum, _ = np.histogramdd(pts, bins=edges, weights=vals)
+    #     if method=='sum':
+    #         return H_sum.astype(self.dtype, copy=False), edges
+    #     H_cnt, _ = np.histogramdd(pts, bins=edges)
+    #     with np.errstate(divide='ignore', invalid='ignore'):
+    #         Hm = H_sum / H_cnt
+    #         Hm[~np.isfinite(Hm)] = 0
+    #     return Hm.astype(self.dtype, copy=False), edges
 
-    def regrid_auto(self, space='q', grid_shape=(200,200,200), method='mean'):
-        arr = self.Q_samp if space=='q' else self.hkl
-        ranges = tuple((arr[...,k].min(), arr[...,k].max()) for k in range(3))
-        if space=='q':
-            self.setup_grid(ranges, grid_shape)
-        else:
-            self.hkl_edges = [np.linspace(r[0], r[1], grid_shape[i]+1)
-                              for i,r in enumerate(ranges)]
-        return self.regrid_intensity(method=method, space=space)
+    # def regrid_auto(self, space='q', grid_shape=(200,200,200), method='mean'):
+    #     arr = self.Q_samp if space=='q' else self.hkl
+    #     ranges = tuple((arr[...,k].min(), arr[...,k].max()) for k in range(3))
+    #     if space=='q':
+    #         self.setup_grid(ranges, grid_shape)
+    #     else:
+    #         self.hkl_edges = [np.linspace(r[0], r[1], grid_shape[i]+1)
+    #                           for i,r in enumerate(ranges)]
+    #     return self.regrid_intensity(method=method, space=space)
 
-    def regrid_interpolate(self, space='q', grid_shape=(200,200,200), method='linear'):
-        pts = (self.Q_samp if space=='q' else self.hkl).reshape(-1,3)
-        vals = self.intensity.ravel()
-        mask = vals>0
-        pts, vals = pts[mask], vals[mask]
-        mins, maxs = pts.min(axis=0), pts.max(axis=0)
-        axes = [np.linspace(mins[d], maxs[d], grid_shape[d]) for d in range(3)]
-        XI, YI, ZI = np.meshgrid(*axes, indexing='ij')
-        G = griddata(pts, vals, (XI, YI, ZI), method=method, fill_value=0)
-        return G.astype(self.dtype, copy=False), axes
+    # def regrid_interpolate(self, space='q', grid_shape=(200,200,200), method='linear'):
+    #     pts = (self.Q_samp if space=='q' else self.hkl).reshape(-1,3)
+    #     vals = self.intensity.ravel()
+    #     mask = vals>0
+    #     pts, vals = pts[mask], vals[mask]
+    #     mins, maxs = pts.min(axis=0), pts.max(axis=0)
+    #     axes = [np.linspace(mins[d], maxs[d], grid_shape[d]) for d in range(3)]
+    #     XI, YI, ZI = np.meshgrid(*axes, indexing='ij')
+    #     G = griddata(pts, vals, (XI, YI, ZI), method=method, fill_value=0)
+    #     return G.astype(self.dtype, copy=False), axes
 
-    def crop_by_positions(self, z_bound=None, y_bound=None, x_bound=None, in_place=True):
-        Nf, ny, nx = self.intensity.shape
-        z0,z1 = (0,Nf-1) if z_bound is None else z_bound
-        y0,y1 = (0,ny-1) if y_bound is None else y_bound
-        x0,x1 = (0,nx-1) if x_bound is None else x_bound
-        Qc = self.Q_samp[z0:z1+1, y0:y1+1, x0:x1+1, :]
-        Hc = self.hkl   [z0:z1+1, y0:y1+1, x0:x1+1, :]
-        Ic = self.intensity[z0:z1+1, y0:y1+1, x0:x1+1]
-        if in_place:
-            self.Q_samp, self.hkl, self.intensity = Qc, Hc, Ic
-            return None
-        return Qc, Hc, Ic
+    # def crop_by_positions(self, z_bound=None, y_bound=None, x_bound=None, in_place=True):
+    #     Nf, ny, nx = self.intensity.shape
+    #     z0,z1 = (0,Nf-1) if z_bound is None else z_bound
+    #     y0,y1 = (0,ny-1) if y_bound is None else y_bound
+    #     x0,x1 = (0,nx-1) if x_bound is None else x_bound
+    #     Qc = self.Q_samp[z0:z1+1, y0:y1+1, x0:x1+1, :]
+    #     Hc = self.hkl   [z0:z1+1, y0:y1+1, x0:x1+1, :]
+    #     Ic = self.intensity[z0:z1+1, y0:y1+1, x0:x1+1]
+    #     if in_place:
+    #         self.Q_samp, self.hkl, self.intensity = Qc, Hc, Ic
+    #         return None
+    #     return Qc, Hc, Ic
 
 
 
