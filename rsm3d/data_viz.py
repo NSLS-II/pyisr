@@ -1,7 +1,3 @@
-# 
-
-# rsm_napari_viewer.py
-
 from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple, Iterable, Dict, Any
@@ -430,9 +426,6 @@ class RSMNapariViewer:
             size=0.0,                       # hide the marker itself
             blending="additive",
         )
-
-
-
 
     def _add_axes_vectors(self, v: "napari.Viewer") -> None:
         # use 10% of largest world extent for vector length

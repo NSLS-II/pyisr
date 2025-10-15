@@ -1,6 +1,6 @@
-
 import numpy as np
 import pandas as pd
+from typing import Optional, Tuple, Union
 from scipy.interpolate import griddata
 import xrayutilities as xu
 
@@ -138,7 +138,7 @@ class RSMBuilder:
         # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
         # dir2 (cols) along +X
         self.qconv.init_area(
-            'z+', 'x+',
+            'z-', 'x+',
             cch1=y0, cch2=x0,
             Nch1=ny, Nch2=nx,
             distance=dist_m,
@@ -215,7 +215,8 @@ class RSMBuilder:
                 UB2pi = _TWO_PI * UB2pi
 
             h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
-            HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
+            # manually apply -1 to h to convert from XU to HKL convention
+            HKLf = np.stack((-h, k, l), axis=-1).astype(self.dtype, copy=False)
 
             Q_samp[idx] = Qf
             HKL[idx]    = HKLf
@@ -235,40 +236,99 @@ class RSMBuilder:
     def regrid_xu(
         self,
         *,
-        space: str = "q",                 # "q" or "hkl"
-        grid_shape=(200, 200, 200),       # (nx, ny, nz)
-        ranges=None,                      # ((xmin,xmax),(ymin,ymax),(zmin,zmax)) or None
-        fuzzy: bool = False,              # use FuzzyGridder3D
-        width=None,                       # scalar or (wx,wy,wz) for fuzzy (same units as axes)
-        normalize: str = "mean",          # "mean" → averaged; "sum" → accumulated
-        stream: bool = False              # iterate frame-by-frame to save RAM
+        space: str = "q",                # "q" or "hkl"
+        grid_shape: Union[int, Tuple[int,int,int]] = (200, 200, 200),
+        ranges: Optional[Tuple[Tuple[float,float], Tuple[float,float], Tuple[float,float]]] = None,
+        fuzzy: bool = False,
+        width: Optional[float] = None,
+        normalize: str = "mean",         # "mean", "sum", or None
+        stream: bool = False,
     ):
-        assert space.lower() in ("q", "hkl")
-        nx, ny, nz = map(int, grid_shape)
-        # arr = self.Q_samp if space.lower() == "q" else self.hkl
+        """
+        Scatter‐to‐grid re‐binning using xrayutilities Gridder3D (or FuzzyGridder3D).
+
+        Parameters
+        ----------
+        space
+            "q" to grid Q_samp or "hkl" to grid self.hkl.
+        grid_shape
+            int → base nx; ny,nz auto‐scaled by data extents ratios
+            (nx, ny, nz) → fixed shape
+            (nx, None, None) or (nx, -1, -1) → nx fixed; ny,nz auto‐scaled
+        ranges
+            ((minx,maxx),(miny,maxy),(minz,maxz)); if None, auto‐computed from data
+        fuzzy
+            if True use xu.FuzzyGridder3D; else xu.Gridder3D
+        width
+            fuzzy width (if fuzzy=True)
+        normalize
+            "mean" (default) → normalize by point‐counts; "sum" → sum weighting
+        stream
+            if True accumulate frame‐by‐frame (lower peak RAM, retains raw points)
+
+        Returns
+        -------
+        grid : ndarray
+            3D volume array of shape (nx, ny, nz)
+        (xaxis, yaxis, zaxis) : tuple of 1D arrays
+            bin centers along each dimension
+        """
+        # select data array
         arr = self.Q_samp if space.lower() == "q" else self.hkl
-        
-        #+        # ensure we have a (x,y,z) range tuple
+
+        # auto‐compute axis ranges if not provided
         if ranges is None:
-           ranges = tuple(
-               (float(np.nanmin(arr[..., i])), float(np.nanmax(arr[..., i])))
-               for i in range(3)
-           )
-
-       # build the gridder
-        G = (xu.FuzzyGridder3D if fuzzy else xu.Gridder3D)(nx, ny, nz)
-        if stream:
-           G.KeepData(True)
-
-       # apply the ranges (try fixed=True if supported)
+            ranges = tuple(
+                (
+                    float(np.nanmin(arr[..., i])),
+                    float(np.nanmax(arr[..., i])),
+                )
+                for i in range(3)
+            )
         (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
-        try:
-           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
-        except TypeError:
-           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
-        print(ranges)
+        # spans for aspect ratios
+        Lx = max(1e-12, xmax - xmin)
+        Ly = max(1e-12, ymax - ymin)
+        Lz = max(1e-12, zmax - zmin)
 
+        # helper to auto‐scale ny,nz from nx
+        def _auto_shape(nx_val: int) -> Tuple[int,int,int]:
+            nxv = max(2, int(nx_val))
+            nyv = max(2, int(round(nxv * (Ly / Lx))))
+            nzv = max(2, int(round(nxv * (Lz / Lx))))
+            return nxv, nyv, nzv
+
+        # interpret grid_shape
+        if isinstance(grid_shape, int):
+            nx, ny, nz = _auto_shape(grid_shape)
+        else:
+            gx = list(grid_shape)
+            if len(gx) != 3:
+                raise ValueError("grid_shape must be int or length‐3 tuple.")
+            nx = gx[0]
+            # auto‐compute missing dims
+            if gx[1] in (None, -1):
+                nx, ny, nz = _auto_shape(nx)
+            else:
+                ny = gx[1]
+                nz = gx[2] if gx[2] not in (None, -1) else _auto_shape(nx)[2]
+        nx, ny, nz = int(nx), int(ny), int(nz)
+
+        # build the gridder
+        Gridder = xu.FuzzyGridder3D if fuzzy else xu.Gridder3D
+        G = Gridder(nx, ny, nz)
         if stream:
+            G.KeepData(True)
+
+        # set data range (fixed=True if supported)
+        try:
+            G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
+        except TypeError:
+            G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+
+        # feed scattered points
+        if stream:
+            # per‐frame loop
             for i in range(self.intensity.shape[0]):
                 Xi = arr[i, ..., 0].ravel()
                 Yi = arr[i, ..., 1].ravel()
@@ -279,6 +339,7 @@ class RSMBuilder:
                 else:
                     G(Xi, Yi, Zi, Wi)
         else:
+            # all‐points at once
             X = arr[..., 0].ravel()
             Y = arr[..., 1].ravel()
             Z = arr[..., 2].ravel()
@@ -288,10 +349,74 @@ class RSMBuilder:
             else:
                 G(X, Y, Z, W)
 
-        G.Normalize(False if normalize.lower() == "sum" else True)
+        # normalize
+        do_norm = False if normalize and normalize.lower() == "sum" else True
+        G.Normalize(do_norm)
+
+        # extract results
         grid = G.data.astype(self.dtype, copy=False)
         xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
         return grid, (xax, yax, zax)
+    # def regrid_xu(
+    #     self,
+    #     *,
+    #     space: str = "q",                 # "q" or "hkl"
+    #     grid_shape=(200, 200, 200),       # (nx, ny, nz)
+    #     ranges=None,                      # ((xmin,xmax),(ymin,ymax),(zmin,zmax)) or None
+    #     fuzzy: bool = False,              # use FuzzyGridder3D
+    #     width=None,                       # scalar or (wx,wy,wz) for fuzzy (same units as axes)
+    #     normalize: str = "mean",          # "mean" → averaged; "sum" → accumulated
+    #     stream: bool = False              # iterate frame-by-frame to save RAM
+    # ):
+    #     assert space.lower() in ("q", "hkl")
+    #     nx, ny, nz = map(int, grid_shape)
+    #     # arr = self.Q_samp if space.lower() == "q" else self.hkl
+    #     arr = self.Q_samp if space.lower() == "q" else self.hkl
+        
+    #     #+        # ensure we have a (x,y,z) range tuple
+    #     if ranges is None:
+    #        ranges = tuple(
+    #            (float(np.nanmin(arr[..., i])), float(np.nanmax(arr[..., i])))
+    #            for i in range(3)
+    #        )
+
+    #    # build the gridder
+    #     G = (xu.FuzzyGridder3D if fuzzy else xu.Gridder3D)(nx, ny, nz)
+    #     if stream:
+    #        G.KeepData(True)
+
+    #    # apply the ranges (try fixed=True if supported)
+    #     (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
+    #     try:
+    #        G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
+    #     except TypeError:
+    #        G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+    #     print(ranges)
+
+    #     if stream:
+    #         for i in range(self.intensity.shape[0]):
+    #             Xi = arr[i, ..., 0].ravel()
+    #             Yi = arr[i, ..., 1].ravel()
+    #             Zi = arr[i, ..., 2].ravel()
+    #             Wi = self.intensity[i].ravel()
+    #             if fuzzy and width is not None:
+    #                 G(Xi, Yi, Zi, Wi, width=width)
+    #             else:
+    #                 G(Xi, Yi, Zi, Wi)
+    #     else:
+    #         X = arr[..., 0].ravel()
+    #         Y = arr[..., 1].ravel()
+    #         Z = arr[..., 2].ravel()
+    #         W = self.intensity.ravel()
+    #         if fuzzy and width is not None:
+    #             G(X, Y, Z, W, width=width)
+    #         else:
+    #             G(X, Y, Z, W)
+
+    #     G.Normalize(False if normalize.lower() == "sum" else True)
+    #     grid = G.data.astype(self.dtype, copy=False)
+    #     xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
+    #     return grid, (xax, yax, zax)
 
     # ───────────────────────────────────────────────────────────────────────────
     # Optional NumPy-based regridders (kept as-is)

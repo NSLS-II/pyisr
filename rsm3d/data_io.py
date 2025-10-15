@@ -6,8 +6,6 @@ import pandas as pd
 import numpy as np
 import h5py
 import hdf5plugin
-
-
 import vtk
 from vtk.util import numpy_support
 
@@ -202,6 +200,127 @@ def write_rsm_volume_to_vtk(rsm, edges, filename, binary=False):
         writer.SetFileTypeToASCII()
     writer.Write()
 
+
+def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
+    """
+    Write a 3D RSM volume to VTK XML RectilinearGrid (.vtr).
+
+    Parameters
+    ----------
+    rsm : (nx, ny, nz) ndarray
+        Cell-centered intensities (one value per bin).
+    coords : [x_coords, y_coords, z_coords]
+        For each axis, you may pass either:
+          * bin EDGES of length n+1, or
+          * bin CENTERS of length n (edges will be inferred).
+        Arrays may be ascending or descending; descending inputs are handled.
+    filename : str
+        Output path; '.vtr' will be enforced if missing.
+    binary : bool
+        Appended (binary) vs ASCII XML data.
+    compress : bool
+        Enable zlib compression when binary=True (if available in your VTK).
+    """
+    x_c, y_c, z_c = [np.asarray(a, dtype=np.float64) for a in coords]
+    nx, ny, nz = map(int, rsm.shape)
+
+    def _as_edges(arr, n):
+        """Return edges of length n+1, from either edges (n+1) or centers (n)."""
+        m = arr.size
+        if m == n + 1:
+            return arr.copy()
+        if m == n:
+            # infer edges from centers: interior = midpoints, ends extrapolated
+            edges = np.empty(n + 1, dtype=np.float64)
+            edges[1:-1] = 0.5 * (arr[1:] + arr[:-1])
+            # use local spacing at each end
+            edges[0]  = arr[0]  - 0.5 * (arr[1]  - arr[0])
+            edges[-1] = arr[-1] + 0.5 * (arr[-1] - arr[-2])
+            return edges
+        raise ValueError(f"Coordinate array must have length {n} (centers) or {n+1} (edges); got {m}.")
+
+    x_edges = _as_edges(x_c, nx)
+    y_edges = _as_edges(y_c, ny)
+    z_edges = _as_edges(z_c, nz)
+
+    # Ensure each axis is ascending; if not, flip both coords and data
+    rsm_work = np.asarray(rsm, dtype=np.float32)
+
+    if x_edges[1] < x_edges[0]:
+        x_edges = x_edges[::-1].copy()
+        rsm_work = np.flip(rsm_work, axis=0)
+    if y_edges[1] < y_edges[0]:
+        y_edges = y_edges[::-1].copy()
+        rsm_work = np.flip(rsm_work, axis=1)
+    if z_edges[1] < z_edges[0]:
+        z_edges = z_edges[::-1].copy()
+        rsm_work = np.flip(rsm_work, axis=2)
+
+    # Basic sanity: positive widths
+    if np.any(np.diff(x_edges) <= 0) or np.any(np.diff(y_edges) <= 0) or np.any(np.diff(z_edges) <= 0):
+        raise ValueError("Non-positive bin width detected after adjustment.")
+
+    # Build rectilinear grid
+    grid = vtk.vtkRectilinearGrid()
+    # Points = bins+1 along each axis
+    grid.SetDimensions(nx + 1, ny + 1, nz + 1)
+    # Also set explicit extent in point-index space (optional but robust)
+    grid.SetExtent(0, nx, 0, ny, 0, nz)
+
+    # Coordinate arrays (vtkDoubleArray)
+    def _vtk_coords(arr):
+        v = numpy_support.numpy_to_vtk(arr, deep=True)
+        # vtkRectilinearGrid ignores name here; fine to leave unset or set a label
+        return v
+
+    grid.SetXCoordinates(_vtk_coords(x_edges))
+    grid.SetYCoordinates(_vtk_coords(y_edges))
+    grid.SetZCoordinates(_vtk_coords(z_edges))
+
+    # Cell data: sanitize + Fortran order so I (x) is fastest (VTK IJK)
+    np.nan_to_num(rsm_work, copy=False)
+    intens = rsm_work.ravel(order="F")
+    vtk_int = numpy_support.numpy_to_vtk(intens, deep=True)
+    vtk_int.SetName("intensity")
+    grid.GetCellData().SetScalars(vtk_int)
+    grid.GetCellData().SetActiveScalars("intensity")
+
+    # Writer
+    if not filename.lower().endswith(".vtr"):
+        base = filename.rsplit(".", 1)[0] if "." in filename else filename
+        filename = base + ".vtr"
+
+    w = vtk.vtkXMLRectilinearGridWriter()
+    try:
+        w.SetInputData(grid)
+    except AttributeError:
+        w.SetInput(grid)
+    w.SetFileName(filename)
+
+    if binary:
+        try:
+            w.SetDataModeToAppended()
+        except AttributeError:
+            try:
+                w.SetDataModeToBinary()
+            except AttributeError:
+                pass
+        if compress:
+            try:
+                w.SetCompressorTypeToZLib()
+            except AttributeError:
+                try:
+                    w.SetCompressor(vtk.vtkZLibDataCompressor())
+                except Exception:
+                    pass
+    else:
+        try:
+            w.SetDataModeToAscii()
+        except AttributeError:
+            pass
+
+    if w.Write() != 1:
+        raise RuntimeError(f"Failed to write VTR file: {filename}")
 
 
 def read_hdf5_tiff_data(directory):

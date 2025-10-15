@@ -1,6 +1,32 @@
-# app_trame_rsm.py
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "trame>=3.10",
+#     "trame-components>=2.5",
+#     "trame-vtklocal",
+#     "trame-vuetify",
+#     "vtk==9.5.0rc2",
+#     "xrayutilities",
+# ]
+#
+# [[tool.uv.index]]
+# url = "https://wheels.vtk.org"
+# ///
+import vtk
+
+from trame.app import TrameApp
+from trame.ui.vuetify3 import SinglePageWithDrawerLayout
+from trame.widgets import vtklocal, trame as tw, vuetify3 as v3, html as h
+from trame.decorators import change
+from trame.assets.remote import HttpFile  # optional utility; kept for parity with example
+from trame.assets.local import to_url     # optional utility; kept for parity with example
+
+# -----------------------------------------------------------------------------
+# Domain imports
+# -----------------------------------------------------------------------------
 import os
-import argparse
 import threading
 import time
 from types import SimpleNamespace
@@ -8,41 +34,43 @@ from types import SimpleNamespace
 import numpy as np
 import xrayutilities as xu
 
-# ── trame (force Vue2 only if your plugins are v1) ────────────────────────────
-from trame.ui.vuetify import SinglePageLayout
-from trame.widgets import vuetify as v
-from trame.widgets import html as h
-from trame.widgets import vtk as wvtk
-from trame.app import get_server
+# Your RSMBuilder (must be importable on PYTHONPATH)
+from rsm3d.rsm3d import RSMBuilder
 
-# If your stack is Vue2, keep client_type="vue2". If you upgraded to Vue3 plugins,
-# switch to: server = get_server()
-server = get_server(client_type="vue2")
-state, ctrl = server.state, server.controller
 
-# Vuetify aliases to support both naming schemes
-VSelect     = getattr(v, "VSelect",     getattr(v, "Select", None))
-VSwitch     = getattr(v, "VSwitch",     getattr(v, "Switch", None))
-VTextField  = getattr(v, "VTextField",  getattr(v, "TextField", None))
-VDivider    = getattr(v, "VDivider",    getattr(v, "Divider", None))
-VBtn        = getattr(v, "VBtn",        getattr(v, "Btn", None))
-VSpacer     = getattr(v, "VSpacer",     getattr(v, "Spacer", None))
-VContainer  = getattr(v, "VContainer",  getattr(v, "Container", None))
-VRow        = getattr(v, "VRow",        getattr(v, "Row", None))
-VCol        = getattr(v, "VCol",        getattr(v, "Col", None))
+# -----------------------------------------------------------------------------
+# App constants / initial state
+# -----------------------------------------------------------------------------
+INITIAL_STATE = {
+    "trame__title": "RSM Stream (Vue3)",
+    # Add your own favicon if desired: "trame__favicon": to_url("/path/to/icon.png"),
+    "space": "hkl",
+    "normalize": "mean",
+    "fuzzy": False,
+    "width": 0.0,
+    "nx": 128,
+    "ny": 128,
+    "nz": 128,
+    "update_every": 5,
+    "running": False,
+    "frame": 0,
+    "elapsed": 0.0,
+    "clim": (0.0, 1.0),
+    "status": "Idle",
+    "error": "",
+    # UI-driven paths (no CLI)
+    "spec_path": "",
+    "tiff_dir": "",
+}
 
-# Bail early if aliases missing (prevents white page)
-for _name, _w in dict(
-    VSelect=VSelect, VSwitch=VSwitch, VTextField=VTextField,
-    VDivider=VDivider, VBtn=VBtn, VSpacer=VSpacer,
-    VContainer=VContainer, VRow=VRow, VCol=VCol,
-).items():
-    if _w is None:
-        raise RuntimeError(f"Vuetify widget '{_name}' not available in this stack.")
 
-# ── VTK imports / fallbacks ───────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# VTK helpers
+# -----------------------------------------------------------------------------
 from vtkmodules.vtkCommonDataModel import vtkImageData
-from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow, vtkVolume, vtkVolumeProperty
+from vtkmodules.vtkRenderingCore import (
+    vtkRenderer, vtkRenderWindow, vtkVolume, vtkVolumeProperty,
+)
 try:
     from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
     HAVE_SMART = True
@@ -56,6 +84,7 @@ except Exception:
 from vtkmodules.vtkRenderingVolume import vtkFixedPointVolumeRayCastMapper as vtkCPUVolumeMapper
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
+
 def make_volume_mapper():
     if HAVE_SMART:
         return vtkSmartVolumeMapper()
@@ -63,10 +92,7 @@ def make_volume_mapper():
         return vtkGPUVolumeRayCastMapper()
     return vtkCPUVolumeMapper()
 
-# ── Your RSMBuilder (must be importable) ──────────────────────────────────────
-from rsm3d.rsm3d import RSMBuilder
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 def vtk_set_image_from_grid(image: vtkImageData, grid: np.ndarray, axes):
     nx, ny, nz = [int(len(a)) for a in axes]
     if grid.shape != (nx, ny, nz):
@@ -83,6 +109,7 @@ def vtk_set_image_from_grid(image: vtkImageData, grid: np.ndarray, axes):
     image.GetPointData().SetScalars(scalars)
     image.Modified()
 
+
 def robust_percentiles(a: np.ndarray, lo=1.0, hi=99.5):
     a = np.asarray(a, dtype=np.float32)
     m = np.isfinite(a)
@@ -93,9 +120,51 @@ def robust_percentiles(a: np.ndarray, lo=1.0, hi=99.5):
         p1 = p0 + 1e-3
     return float(p0), float(p1)
 
-# ── Worker: stream frames → gridder → VTK ─────────────────────────────────────
+
+# -----------------------------------------------------------------------------
+# Build VTK scene
+# -----------------------------------------------------------------------------
+
+def create_vtk_volume_scene():
+    renderer = vtk.vtkRenderer()
+    render_window = vtk.vtkRenderWindow()
+    render_window.AddRenderer(renderer)
+    render_window.OffScreenRenderingOn()
+
+    image = vtkImageData()
+    mapper = make_volume_mapper()
+    mapper.SetInputData(image)
+
+    prop = vtkVolumeProperty()
+    prop.SetInterpolationTypeToLinear()
+    prop.ShadeOff()
+    prop.SetScalarOpacityUnitDistance(0.5)
+
+    volume = vtkVolume()
+    volume.SetMapper(mapper)
+    volume.SetProperty(prop)
+
+    renderer.AddVolume(volume)
+    renderer.SetBackground(0.10, 0.10, 0.12)
+
+    # Seed tiny volume so canvas isn’t blank
+    init_n = 8
+    init_grid = np.zeros((init_n, init_n, init_n), dtype=np.float32)
+    axes = (np.arange(init_n, dtype=float),) * 3
+    vtk_set_image_from_grid(image, init_grid, axes)
+
+    render_window.Render()
+    renderer.ResetCamera()
+
+    return render_window, renderer, image, mapper, volume
+
+
+# -----------------------------------------------------------------------------
+# Worker: stream frames → gridder → VTK
+# -----------------------------------------------------------------------------
+
 def stream_process_and_update(
-    server,
+    app: TrameApp,
     backend: SimpleNamespace,
     builder: RSMBuilder,
     *,
@@ -106,7 +175,7 @@ def stream_process_and_update(
     width=None,
     update_every=5,
 ):
-    state = server.state
+    state = app.state
     image = backend.image
     ren   = backend.ren
     running_flag = backend.running_flag
@@ -163,13 +232,15 @@ def stream_process_and_update(
                     if i == 0:
                         ren.ResetCamera()
                         backend.view_update()
-                server.call_in_idle(_push)
+
+                app.call_in_idle(_push)
             time.sleep(0)
 
         if running_flag["value"] and normalize.lower() == "mean":
             G.Normalize(True)
             grid = np.array(G.data, copy=True, dtype=np.float32)
             xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
+
             def _final():
                 vtk_set_image_from_grid(image, grid, (xax, yax, zax))
                 lo, hi = robust_percentiles(grid)
@@ -178,7 +249,8 @@ def stream_process_and_update(
                 state.elapsed = time.time() - t0
                 state.status = f"Done. Frames: {n_frames}"
                 backend.view_update()
-            server.call_in_idle(_final)
+
+            app.call_in_idle(_final)
 
     except Exception as e:
         state.error = f"{type(e).__name__}: {e}"
@@ -187,62 +259,60 @@ def stream_process_and_update(
         running_flag["value"] = False
         state.running = False
 
-# ── App builder ───────────────────────────────────────────────────────────────
-def build_app(spec_file, tiff_dir):
-    # VTK scene (raw objects kept in backend)
-    ren = vtkRenderer()
-    rw  = vtkRenderWindow()
-    rw.AddRenderer(ren)
 
-    image  = vtkImageData()
-    mapper = make_volume_mapper()
-    mapper.SetInputData(image)
+# -----------------------------------------------------------------------------
+# Trame app (Vue3 style)
+# -----------------------------------------------------------------------------
+class App(TrameApp):
+    def __init__(self, server=None):
+        super().__init__(server)
 
-    prop = vtkVolumeProperty()
-    prop.SetInterpolationTypeToLinear()
-    prop.ShadeOff()
-    prop.SetScalarOpacityUnitDistance(0.5)
+        # VTK setup
+        self.rw, self.ren, self.image, self.mapper, self.volume = create_vtk_volume_scene()
+        self.backend = SimpleNamespace(
+            ren=self.ren,
+            rw=self.rw,
+            image=self.image,
+            mapper=self.mapper,
+            volume=self.volume,
+            running_flag={"value": False},
+            view_update=lambda: None,
+        )
 
-    volume = vtkVolume()
-    volume.SetMapper(mapper)
-    volume.SetProperty(prop)
-    ren.AddVolume(volume)
-    ren.SetBackground(0.10, 0.10, 0.12)
+        # GUI + state
+        self._build_ui()
+        self.state.update(INITIAL_STATE)
 
-    # Seed tiny volume so canvas isn’t blank
-    init_n = 8
-    init_grid = np.zeros((init_n, init_n, init_n), dtype=np.float32)
-    axes = (np.arange(init_n, dtype=float),) * 3
-    vtk_set_image_from_grid(image, init_grid, axes)
-    ren.ResetCamera()
+    # --- Reactive helpers (optional) -----------------------------------------
+    @change("fuzzy")
+    def _on_fuzzy(self, fuzzy, **_):
+        if not fuzzy:
+            self.state.width = 0.0
 
-    backend = SimpleNamespace(
-        ren=ren, rw=rw, image=image, mapper=mapper, volume=volume,
-        running_flag={"value": False}, view_update=lambda: None,
-    )
+    # --- Controls -------------------------------------------------------------
+    def _ensure_builder(self):
+        s = self.state
+        spec_file = (s.spec_path or "").strip()
+        tiff_dir  = (s.tiff_dir or "").strip()
+        if not spec_file:
+            s.error = "Please provide a SPEC file path."
+            s.status = "Missing path"
+            raise RuntimeError(s.error)
+        if not tiff_dir:
+            s.error = "Please provide a TIFF directory path."
+            s.status = "Missing path"
+            raise RuntimeError(s.error)
+        if not os.path.exists(spec_file):
+            s.error = f"SPEC file not found: {spec_file}"
+            s.status = "Path error"
+            raise FileNotFoundError(s.error)
+        if not os.path.isdir(tiff_dir):
+            s.error = f"TIFF directory not found: {tiff_dir}"
+            s.status = "Path error"
+            raise NotADirectoryError(s.error)
 
-    # UI state
-    state.space = "hkl"
-    state.normalize = "mean"
-    state.fuzzy = False
-    state.width = 0.0
-    state.nx = 128
-    state.ny = 128
-    state.nz = 128
-    state.update_every = 5
-    state.running = False
-    state.frame = 0
-    state.elapsed = 0.0
-    state.clim = (0.0, 1.0)
-    state.status = "Idle"
-    state.error = ""
-
-    # Build data lazily when user clicks Start (prevents blocking/white page)
-    builder_holder = {"obj": None}
-
-    def ensure_builder():
-        if builder_holder["obj"] is None:
-            state.status = "Loading data…"
+        if not hasattr(self, "_builder") or (self._builder is None):
+            s.status = "Loading data…"
             b = RSMBuilder(
                 spec_file, tiff_dir,
                 ub_includes_2pi=True,
@@ -251,105 +321,106 @@ def build_app(spec_file, tiff_dir):
                 dtype=np.float32,
             )
             b.compute_full(verbose=True)
-            builder_holder["obj"] = b
-            state.status = "Data ready"
+            self._builder = b
+            s.status = "Data ready"
 
-    def start_stream(*_):
-        if state.running:
+    def start_stream(self, *_):
+        s = self.state
+        if s.running:
             return
         try:
-            ensure_builder()
-        except Exception as e:
-            state.error = f"Builder error: {e}"
-            state.status = "Error"
+            self._ensure_builder()
+        except Exception:
             return
 
-        state.running = True
-        backend.running_flag["value"] = True
-        state.frame = 0
-        state.elapsed = 0.0
-        state.error = ""
+        s.running = True
+        self.backend.running_flag["value"] = True
+        s.frame = 0
+        s.elapsed = 0.0
+        s.error = ""
 
-        grid_shape = (int(state.nx), int(state.ny), int(state.nz))
-        fuzzy = bool(state.fuzzy)
-        width = None if (not fuzzy or float(state.width) <= 0) else float(state.width)
+        grid_shape = (int(s.nx), int(s.ny), int(s.nz))
+        fuzzy = bool(s.fuzzy)
+        width = None if (not fuzzy or float(s.width) <= 0) else float(s.width)
 
         t = threading.Thread(
             target=stream_process_and_update,
-            args=(server, backend, builder_holder["obj"]),
+            args=(self, self.backend, self._builder),
             kwargs=dict(
-                space=state.space,
+                space=s.space,
                 grid_shape=grid_shape,
-                normalize=state.normalize,
+                normalize=s.normalize,
                 fuzzy=fuzzy,
                 width=width,
-                update_every=int(state.update_every),
+                update_every=int(s.update_every),
             ),
             daemon=True,
         )
         t.start()
 
-    def stop_stream(*_):
-        backend.running_flag["value"] = False
-        state.running = False
+    def stop_stream(self, *_):
+        self.backend.running_flag["value"] = False
+        self.state.running = False
 
-    ctrl.start_stream = start_stream
-    ctrl.stop_stream  = stop_stream
+    def clear_builder(self, *_):
+        self._builder = None
+        self.state.status = "Idle"
+        self.state.error = ""
 
-    # ── UI layout ─────────────────────────────────────────────────────────────
-    with SinglePageLayout(server) as layout:
-        layout.title.set_text("RSM Stream (trame + VTK) — FourC")
+    # --- UI ------------------------------------------------------------------
+    def _build_ui(self):
+        with SinglePageWithDrawerLayout(self.server, full_height=True) as layout:
+            self.ui = layout
 
-        with layout.toolbar:
-            VSelect(v_model=("space",), items=(["hkl", "q"]), label="Space",
-                    dense=True, hide_details=True, style="max-width: 120px")
-            VSelect(v_model=("normalize",), items=(["mean", "sum"]), label="Normalize",
-                    dense=True, hide_details=True, style="max-width: 140px")
-            VSwitch(v_model=("fuzzy",), label="Fuzzy", hide_details=True, dense=True)
-            VTextField(v_model=("width",), type="number", label="Width (fuzzy)",
-                       dense=True, hide_details=True, style="max-width: 140px")
-            VDivider(vertical=True, classes="mx-2")
-            VTextField(v_model=("nx",), type="number", label="Nx", dense=True, hide_details=True, style="max-width: 90px")
-            VTextField(v_model=("ny",), type="number", label="Ny", dense=True, hide_details=True, style="max-width: 90px")
-            VTextField(v_model=("nz",), type="number", label="Nz", dense=True, hide_details=True, style="max-width: 90px")
-            VTextField(v_model=("update_every",), type="number", label="Update every N frames",
-                       dense=True, hide_details=True, style="max-width: 200px")
-            VDivider(vertical=True, classes="mx-2")
-            VBtn("Start", click=ctrl.start_stream, disabled=("running",))
-            VBtn("Stop",  click=ctrl.stop_stream,  disabled=("not running",))
-            VBtn("Render", click=lambda *_: backend.view_update(), classes="ml-2")
-            VSpacer()
-            h.Div("Status: {{ status }} — Frame: {{ frame }} — Elapsed: {{ elapsed.toFixed(1) }} s",
-                  style="font-weight: 500;")
-            h.Div("{{ error }}", style="color: #ff6b6b;")
+            # Toolbar
+            with layout.toolbar as toolbar:
+                toolbar.density = "compact"
+                layout.title.set_text("RSM Stream (VTK)")
+                v3.VTextField(v_model=("spec_path",), density="compact", label="SPEC file path", hide_details=True, style="max-width: 360px")
+                v3.VTextField(v_model=("tiff_dir",),  density="compact", label="TIFF directory path", hide_details=True, style="max-width: 360px")
+                v3.VBtn("Clear", density="comfortable", variant="tonal", class_="ml-2", click=self.clear_builder)
+                v3.VDivider(vertical=True, class_="mx-2")
 
-        with layout.content:
-            # Give the container height; create view and expose only a callable
-            with VContainer(fluid=True, classes="pa-0", style="height: calc(100vh - 120px);"):
-                with VRow(classes="fill-height", style="height: 100%;"):
-                    with VCol(classes="fill-height"):
-                        view = wvtk.VtkRemoteView(backend.rw, interactive_ratio=1, ref="view")
-                        backend.view_update = view.update
-                        view.update()   # push initial empty frame
-                        view
+                v3.VSelect(v_model=("space",), items=["hkl", "q"], label="Space", density="compact", hide_details=True, style="max-width: 140px")
+                v3.VSelect(v_model=("normalize",), items=["mean", "sum"], label="Normalize", density="compact", hide_details=True, style="max-width: 160px")
+                v3.VSwitch(v_model=("fuzzy",), label="Fuzzy", density="compact", hide_details=True)
+                v3.VTextField(v_model=("width",), type="number", label="Width (fuzzy)", density="compact", hide_details=True, style="max-width: 160px")
+                v3.VDivider(vertical=True, class_="mx-2")
+                v3.VTextField(v_model=("nx",), type="number", label="Nx", density="compact", hide_details=True, style="max-width: 90px")
+                v3.VTextField(v_model=("ny",), type="number", label="Ny", density="compact", hide_details=True, style="max-width: 90px")
+                v3.VTextField(v_model=("nz",), type="number", label="Nz", density="compact", hide_details=True, style="max-width: 90px")
+                v3.VTextField(v_model=("update_every",), type="number", label="Update every N frames", density="compact", hide_details=True, style="max-width: 220px")
 
-        with layout.footer:
-            h.Div("CLim: {{ clim[0].toFixed(3) }} … {{ clim[1].toFixed(3) }}")
+                v3.VDivider(vertical=True, class_="mx-2")
+                v3.VBtn("Start", variant="flat", class_="ml-1", disabled=("running",), click=self.start_stream)
+                v3.VBtn("Stop",  variant="tonal", class_="ml-1", disabled=("not running",), click=self.stop_stream)
+                v3.VBtn("Render", variant="text", class_="ml-2", click=lambda *_: self.backend.view_update())
+                v3.VSpacer()
+                h.Div("Status: {{ status }} — Frame: {{ frame }} — Elapsed: {{ elapsed.toFixed(1) }} s", class_="font-weight-medium mr-3")
+                h.Div("{{ error }}", style="color: #ff6b6b;")
 
-    return server
+            # Drawer (left empty for now; you can add advanced controls here)
+            with layout.drawer:
+                h.Div("Ready", class_="pa-2 text-medium-emphasis")
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+            # Content
+            with layout.content:
+                with vtklocal.LocalView(self.rw, throttle_rate=20) as view:
+                    self.ctrl.view_update = view.update_throttle
+                    self.ctrl.view_reset_camera = view.reset_camera
+
+        # End of UI build
+
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--spec", required=True, help="Path to SPEC file")
-    ap.add_argument("--tiff", required=True, help="Directory of TIFF frames")
-    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 1234)))
-    ap.add_argument("--server", action="store_true", help="Don't open a browser.")
-    args = ap.parse_args()
+    app = App()
+    # Default host/port; open browser automatically
+    app.server.start(address="127.0.0.1", port=1234, open_browser=True)
 
-    app = build_app(args.spec, args.tiff)
-    app.start(address=args.host, port=args.port, open_browser=not args.server)
 
 if __name__ == "__main__":
     main()
