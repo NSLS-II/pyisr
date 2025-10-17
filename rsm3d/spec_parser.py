@@ -721,44 +721,199 @@ import sys
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
+import yaml
+from pathlib import Path
+
 
 class ExperimentSetup:
     """
-    Encapsulates the experimental geometry and detector parameters.
+    Load experiment parameters from a YAML file.  Wavelength is optional:
+      • if provided and >1e-3 Å, used directly
+      • if provided in meters (<1e-3), converted to Å
+      • if omitted or non‐positive, computed from energy [Å] = 12.3984193 / E[keV]
+    Required YAML keys: distance, pitch, ycenter, xcenter,
+                        xpixels, ypixels, phi, theta, dtheta, energy
+    Optional key: wavelength
     """
-    def __init__(self,
-                 distance=781.05*1e-3,  # convert mm to m
-                 pitch=75*1e-6,    # convert µm to m
-                 ycenter=257,
-                 xcenter=515,
-                #  ycenter=400,
-                #  xcenter=515,
-                 xpixels=1030,
-                 ypixels=514,
-                #  wavelength=0.283383,
-                 phi=0.0,
-                 theta=15.3069,
-                 dtheta=0.04,
-                 energy=11470.0):
-        self.distance   = distance 
-        self.pitch      = pitch 
-        self.ycenter    = ycenter
-        self.xcenter    = xcenter
-        self.xpixels    = xpixels
-        self.ypixels    = ypixels
-        # self.wavelength = wavelength
-        self.phi        = phi
-        self.theta      = theta
-        self.dtheta     = dtheta
-        self.energy_keV     = energy * 1e-3
+    REQUIRED_KEYS = (
+        "distance", "pitch", "ycenter", "xcenter",
+        "xpixels", "ypixels", "phi", "theta", "dtheta", "energy",
+    )
+
+    def __init__(
+        self,
+        distance: float,
+        pitch: float,
+        ycenter: int,
+        xcenter: int,
+        xpixels: int,
+        ypixels: int,
+        phi: float,
+        theta: float,
+        dtheta: float,
+        energy: float,
+        wavelength: float | None = None,
+    ):
+        # detector geometry
+        self.distance = distance
+        self.pitch = pitch
+        self.ycenter = ycenter
+        self.xcenter = xcenter
+        self.xpixels = xpixels
+        self.ypixels = ypixels
+        # scan angles
+        self.phi = phi
+        self.theta = theta
+        self.dtheta = dtheta
+        # beam energy
+        self.energy = energy
+        self.energy_keV = energy
+
+        # wavelength handling
+        # wavelength handling: allow None, numeric, or numeric‐string; fallback to energy
+        lam_A: float | None = None
+        if wavelength is not None:
+            try:
+                lam_A = float(wavelength)
+            except (TypeError, ValueError):
+                lam_A = None
+
+        # if given in meters (small positive), convert to Å
+        if lam_A is not None and 0.0 < lam_A < 1e-3:
+            lam_A *= 1e10
+
+        # if missing or non-positive, compute from energy
+        if lam_A is None or lam_A <= 0.0:
+            if self.energy_keV > 0.0:
+                lam_A = self._energy_keV_to_lambda_A(self.energy_keV)
+            else:
+                raise ValueError("ExperimentSetup: energy must be > 0 to derive wavelength")
+
+        if lam_A <= 0.0:
+            raise ValueError("ExperimentSetup: computed wavelength is non-positive")
+        self.wavelength = lam_A
+       
+    def _energy_keV_to_lambda_A(self, E_keV: float) -> float:
+        """λ[Å] = 12.398419843320026 / E[keV]."""
+        return 12.398419843320026 / float(E_keV)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path):
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"Experiment YAML not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            raise ValueError("Top-level YAML must be a mapping of keys to values.")
+        missing = [k for k in cls.REQUIRED_KEYS if k not in data]
+        if missing:
+            raise ValueError(f"Missing required keys in YAML: {missing!r}")
+        # extract required params + optional wavelength
+        params = {k: data[k] for k in cls.REQUIRED_KEYS}
+        params["wavelength"] = data.get("wavelength", None)
+        return cls(**params)
 
     def __repr__(self):
         return (
-            f"ExperimentSetup(distance={self.distance} m, pitch={self.pitch} m, "
-            f"ycenter={self.ycenter}, xcenter={self.xcenter}, xpixels={self.xpixels}, "
-            f"ypixels={self.ypixels}, wavelength={self.wavelength} Å, phi={self.phi}°, "
-            f"theta={self.theta}°, dtheta={self.dtheta}°, energy={self.energy} eV)"
+            f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
+            f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
+            f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
+            f"theta={self.theta}°, phi={self.phi}°, dtheta={self.dtheta}°, "
+            f"energy={self.energy} eV, wavelength={self.wavelength} Å>"
         )
+
+# class ExperimentSetup:
+#     """Load experiment parameters strictly from a YAML file (no defaults)."""
+#     REQUIRED_KEYS = (
+#         "distance","pitch","ycenter","xcenter",
+#         "xpixels","ypixels","phi","theta","dtheta","energy","wavelength"
+#     )
+
+#     def __init__(
+#         self,
+#         distance: float,
+#         pitch: float,
+#         ycenter: int,
+    #     xcenter: int,
+    #     xpixels: int,
+    #     ypixels: int,
+    #     phi: float,
+    #     theta: float,
+    #     dtheta: float,
+    #     energy: float,
+    #     wavelength: float,
+    # ):
+    #     self.distance = distance
+    #     self.pitch = pitch
+    #     self.ycenter = ycenter
+    #     self.xcenter = xcenter
+    #     self.xpixels = xpixels
+    #     self.ypixels = ypixels
+    #     self.phi = phi
+    #     self.theta = theta
+    #     self.dtheta = dtheta
+    #     self.energy = energy
+    #     self.energy_keV = energy * 1e-3
+    #     self.wavelength = wavelength
+
+    # @classmethod
+    # def from_yaml(cls, path: str | Path):
+    #     p = Path(path)
+    #     if not p.is_file():
+    #         raise FileNotFoundError(f"Experiment YAML not found: {p}")
+    #     with p.open("r", encoding="utf-8") as f:
+    #         data = yaml.safe_load(f)
+    #     if not isinstance(data, dict):
+    #         raise ValueError("Top-level YAML must be a mapping.")
+    #     missing = [k for k in cls.REQUIRED_KEYS if k not in data]
+    #     if missing:
+    #         raise ValueError(f"Missing keys in YAML: {missing}")
+    #     return cls(**{k: data[k] for k in cls.REQUIRED_KEYS})
+
+    # def __repr__(self):
+    #     return (
+    #         f"ExperimentSetup(distance={self.distance} m, pitch={self.pitch} m, "
+    #         f"ycenter={self.ycenter}, xcenter={self.xcenter}, xpixels={self.xpixels}, "
+    #         f"ypixels={self.ypixels}, wavelength={self.wavelength} Å, phi={self.phi}°, "
+    #         f"theta={self.theta}°, dtheta={self.dtheta}°, energy={self.energy} eV)"
+    #     )
+
+# class ExperimentSetup:
+#     """
+#     Encapsulates the experimental geometry and detector parameters.
+#     """
+#     def __init__(self,
+#                  distance=781.05*1e-3,  # convert mm to m
+#                  pitch=75*1e-6,    # convert µm to m
+#                  ycenter=257,
+#                  xcenter=515,
+#                  xpixels=1030,
+#                  ypixels=514,
+#                 #  wavelength=0.283383,
+#                  phi=0.0,
+#                  theta=15.3069,
+#                  dtheta=0.04,
+#                  energy=11470.0):
+#         self.distance   = distance 
+#         self.pitch      = pitch 
+#         self.ycenter    = ycenter
+#         self.xcenter    = xcenter
+#         self.xpixels    = xpixels
+#         self.ypixels    = ypixels
+#         # self.wavelength = wavelength
+#         self.phi        = phi
+#         self.theta      = theta
+#         self.dtheta     = dtheta
+#         self.energy_keV     = energy * 1e-3
+
+#     def __repr__(self):
+#         return (
+#             f"ExperimentSetup(distance={self.distance} m, pitch={self.pitch} m, "
+#             f"ycenter={self.ycenter}, xcenter={self.xcenter}, xpixels={self.xpixels}, "
+#             f"ypixels={self.ypixels}, wavelength={self.wavelength} Å, phi={self.phi}°, "
+#             f"theta={self.theta}°, dtheta={self.dtheta}°, energy={self.energy} eV)"
+#         )
 
 class Crystal:
     """
@@ -958,13 +1113,19 @@ class SpecParser:
     """
     Aggregates ExperimentSetup, Crystal, and ScanAngles for a SPEC file.
     """
-    def __init__(self, filename, npartitions=1):
+    def __init__(self, filename: str, setup_yaml: str, npartitions: int = 1):
         self.filename = filename
-        self.setup    = ExperimentSetup()
-        # For the global Crystal, use the first #G1 and #G3 found in the file.
-        self.crystal  = Crystal.from_spec(filename)
-        # Pass the Crystal to ScanAngles so each record can get its per-scan UB (from #G3).
-        self.scans    = ScanAngles(filename, self.crystal, npartitions=npartitions)
+        self.setup = ExperimentSetup.from_yaml(setup_yaml)
+        self.crystal = Crystal.from_spec(filename)
+        self.scans = ScanAngles(filename, self.crystal, npartitions=npartitions)
+
+    # def __init__(self, filename, npartitions=1):
+    #     self.filename = filename
+    #     self.setup    = ExperimentSetup()
+    #     # For the global Crystal, use the first #G1 and #G3 found in the file.
+    #     self.crystal  = Crystal.from_spec(filename)
+    #     # Pass the Crystal to ScanAngles so each record can get its per-scan UB (from #G3).
+    #     self.scans    = ScanAngles(filename, self.crystal, npartitions=npartitions)
 
     def to_pandas(self):
         df = self.scans.to_pandas()

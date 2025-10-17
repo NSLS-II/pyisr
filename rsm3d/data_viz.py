@@ -1,7 +1,3 @@
-# 
-
-# rsm_napari_viewer.py
-
 from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple, Iterable, Dict, Any
@@ -105,15 +101,35 @@ class RSMNapariViewer:
         self._force_volume(layer)
 
         # Nice camera pose
+        # try:
+        #     v.reset_view()
+        #     if hasattr(v, "camera"):
+        #         # Provide an oblique angle so it's clearly 3D
+        #         v.camera.angles = (30, 30, 0)  # yaw, pitch, roll (deg)
+        #         v.camera.zoom = 1.0
+        # except Exception:
+        #     pass
         try:
             v.reset_view()
             if hasattr(v, "camera"):
-                # Provide an oblique angle so it's clearly 3D
-                v.camera.angles = (30, 30, 0)  # yaw, pitch, roll (deg)
+                # Provide an oblique angle
+                v.camera.angles = (30, 30, 0)
                 v.camera.zoom = 1.0
+
+                # --- AUTO-ZOOM TO DATA EXTENTS ------------------------
+                try:
+                    # extent.data is ((zmin,zmax),(ymin,ymax),(xmin,xmax))
+                    z_range, y_range, x_range = layer.extent.data
+                    v.camera.set_range(
+                        range_z=z_range,
+                        range_y=y_range,
+                        range_x=x_range,
+                    )
+                except Exception:
+                    # fallback if set_range not available
+                    v.reset_view()
         except Exception:
             pass
-
         # UI niceties
         v.axes.visible = True
         v.axes.colored = True
@@ -430,9 +446,6 @@ class RSMNapariViewer:
             size=0.0,                       # hide the marker itself
             blending="additive",
         )
-
-
-
 
     def _add_axes_vectors(self, v: "napari.Viewer") -> None:
         # use 10% of largest world extent for vector length

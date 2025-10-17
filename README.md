@@ -2,89 +2,113 @@
 
 Tools to convert beamline HDF5 data to TIFF and build/visualize reciprocal-space maps (RSM). Uses hklpy (E4CV) for Q/HKL transforms and supports per-scan UB from SPEC (#G3).
 
-## Quickstart (Pixi)
+## Quickstart (pixi)
 
-1) Install Pixi (Linux)
 ```bash
 curl -fsSL https://pixi.sh/install.sh | bash
 export PATH="$HOME/.pixi/bin:$PATH"
-```
 
-2) Clone the repo
-```bash
-git clone git@github.com:NSLS-II/pyisr.git
+git clone git@github.com:NSLS2/pyisr.git
 cd pyisr
+pixi install          # resolve environment
+pixi shell            # enter environment
 ```
 
-3) Create/use the environment
+Test:
+
 ```bash
-pixi install
-pixi shell
+pixi run python -c "import rsm3d; print('ok')"
 ```
 
-Note: VTK/PyVista may require an OpenGL-capable system. On headless Linux, use OSMesa/EGL builds or xvfb-run.
+## Features (core)
 
-## Features
-- HDF5 → TIFF extraction for downstream visualization
-- RSM building and gridding
-- hklpy-based geometry (E4CV) for Q/HKL transforms
-- Per-scan UB from SPEC (#G3) applied in Q→HKL
-- 3D/2D visualization outputs (VTK, TIFF)
+- HDF5 → TIFF frame extraction
+- Per-scan UB (#G3 in SPEC) for HKL transforms via hklpy
+- Automatic HKL (or Q) range detection in re-gridding
+- 3D reciprocal space volume generation
+- Napari interactive viewer (volume + labels + point cloud)
 
-## Usage
+## HDF5 → TIFF
 
-### HDF5 → TIFF
 ```python
-# Inside `pixi shell`
 from rsm3d.data_io import hdf2tiff
-
-input_directory = "/path/to/input/hdf5"
-output_directory = "/path/to/output/tiff"
-hdf2tiff(input_directory, output_directory)
+hdf2tiff("/path/to/hdf5_scans", "/path/to/output_tiff")
 ```
 
-### RSM pipeline
+## RSM Pipeline
+
 ```python
-# Inside `pixi shell`
-from rsm3d.spec_parser import SpecParser
 from rsm3d.rsm3d import RSMBuilder
 
-spec_file = "/path/to/spec_file"
-tiff_dir  = "/path/to/tiff_dir"
+builder = RSMBuilder(
+    spec_file="/path/exp.spec",
+    tiff_dir="/path/tiff_frames",
+    selected_scans=(scan_number,),
+    ub_includes_2pi=True,
+    center_is_one_based=False,
+)
 
-# Per-scan UB is read from #G3 in the SPEC file
-builder = RSMBuilder(spec_file, tiff_dir, selected_scans=(17, 18, 19))
 Q_samp, hkl, intensity = builder.compute_full()
 
-# Option A: auto bounds and regrid in Q or HKL
-rsm_q,   edges_q   = builder.regrid_auto(space='q',   grid_shape=(200, 200, 200), method='mean')
-rsm_hkl, edges_hkl = builder.regrid_auto(space='hkl', grid_shape=(200, 200, 200), method='mean')
+# optional crop (detector indices)
+builder.crop_by_positions(y_bound=(y0, y1), x_bound=(x0, x1))
 
-# Option B: Q auto helper (equivalent to space='q')
-rsm_q2, edges_q2 = builder.regrid_q_auto(grid_shape=(200, 200, 200), method="mean")
+# re-grid (ranges=None → auto min/max)
+grid, (Hax, Kax, Lax) = builder.regrid_xu(
+    space="hkl",
+    grid_shape=(100, 100, 100),
+    ranges=None,
+    fuzzy=False,
+    normalize="mean",
+    stream=True,
+)
 ```
 
-### Export/visualization
+## Napari 3D Workflow
+
+Notebook: `examples/rsm3d_napari_workflow.ipynb`
+
+Launch:
+
+```bash
+pixi run jupyter lab examples/rsm3d_napari_workflow.ipynb
+```
+
+Programmatic:
+
 ```python
-from rsm3d.data_io import write_rsm_volume_to_vtk
-write_rsm_volume_to_vtk(rsm_q, edges_q, "/path/to/output/rsm_q.vtk")
-write_rsm_volume_to_vtk(rsm_hkl, edges_hkl, "/path/to/output/rsm_hkl.vtk")
+from rsm3d.data_viz import RSMNapariViewer
+viewer = RSMNapariViewer(
+    grid, (Hax, Kax, Lax),
+    space="hkl",
+    log_view=True,
+    contrast_percentiles=(1, 99.8),
+).launch()
 ```
-
-## Dependencies (managed by Pixi)
-- Core: numpy, pandas, dask
-- IO: h5py, tifffile, imageio
-- Geometry: hklpy, ophyd
-- Viz: matplotlib, pyvista, vtk
-
 
 ## Tips
-- Large datasets: prefer `pixi shell` + Python scripts over notebooks.
-- Ensure your SPEC file includes #G3 lines so per-scan UB is applied.
 
-## License
-MIT License. See LICENSE.
+- Let `ranges=None` for automatic HKL limits.
+- Crop early to reduce memory/time.
+- Use log view for broad intensity dynamic range.
+
+## Dependencies (managed by pixi)
+
+Core: numpy, scipy, h5py, tifffile, hklpy, napari, xrayutilities (optional).
+List them:
+
+```bash
+pixi run python -m pip list
+```
 
 ## Contributing
-Issues and pull requests are welcome:
-https://github.com/NSLS-II
+
+```bash
+git checkout -b feature/thing
+# edit
+pixi run pytest
+git commit -am "feat: thing"
+git push origin feature/thing
+```
+
+Issues / PRs welcome.

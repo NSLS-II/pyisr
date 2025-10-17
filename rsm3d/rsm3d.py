@@ -1,109 +1,173 @@
-
 import numpy as np
 import pandas as pd
+from typing import Optional, Tuple, Union
 from scipy.interpolate import griddata
 import xrayutilities as xu
 
-from rsm3d.spec_parser import SpecParser
-from rsm3d.data_io import ReadData
 
 _TWO_PI = 2.0 * np.pi
 
-def _energy_keV_to_lambda_A(E_keV: float) -> float:
-    """λ[Å] = 12.398419843320026 / E[keV]."""
-    return 12.398419843320026 / float(E_keV)
-
 class RSMBuilder:
     """
-    3D reciprocal-space maps (Q, HKL) from SPEC + TIFF using xrayutilities
-    configured for a 4-circle diffractometer with area detector.
+    Build reciprocal-space maps from a prepared RSMDataLoader.
 
-    Geometry (defaults):
-      - Four-circle ZXZ: φ(Z) → χ(X) → ω(Z). (sample angles = outer→inner)
-      - Beam along +Y (xrayutilities default).
-      - Detector axes set so per-pixel arrays come back as (ny, nx).
-      - Units: wavelength in Å; distance & pixel size in meters; beam center in pixels (0-based).
+    Initialize with:
+        loader = RSMDataLoader(spec_file, tiff_dir, selected_scans=(21,))
+        loader.load()
+        builder = RSMBuilder(loader, ub_includes_2pi=True)
 
     Parameters
     ----------
-    spec_file, tiff_dir : str
-    use_dask, process_hklscan_only : bool
-    selected_scans : Iterable[int] | None
+    loader : RSMDataLoader
+        Pre-loaded data loader instance (must have .setup, .UB, .df).
     ub_includes_2pi : bool
+        If False, multiply UB by 2π before using with xrayutilities.
     center_is_one_based : bool
-    fourc_mode : {"ZXZ","ZYX"}
-    motor_map : dict
-        logical→column names mapping. Defaults include {"omega":"th","chi":"chi","phi":"phi","tth":"tth"}.
-    two_theta_axis : {"x+","x-","y+","y-","z+","z-"} or ""
-        Detector arm rotation axis (2θ). Use "" to disable if you truly have no 2θ motor.
-    dtype : numpy dtype
+        Adjust beam center indices if 1-based.
     """
-
     def __init__(
         self,
-        spec_file,
-        tiff_dir,
+        loader,
         *,
-        use_dask: bool = False,
-        process_hklscan_only: bool = False,
-        selected_scans=None,
+        motor_map: dict | None = None,
         ub_includes_2pi: bool = True,
         center_is_one_based: bool = False,
-        fourc_mode: str = "ZXZ",
-        motor_map: dict | None = None,
-        two_theta_axis: str = "z+",
         dtype=np.float32,
     ):
-        self.dtype = dtype
+        self.setup, self.UB, self.df = loader.load()
+        self.dtype = np.dtype(dtype)
         self.ub_includes_2pi = bool(ub_includes_2pi)
 
+        # Image shape
+        ny, nx = self.df["intensity"].iat[0].shape
+        self.img_shape = (ny, nx)
+        # Wavelength (Å)
+        lam_A = float(self.setup.wavelength)
+        # Geometry
+        dist_m = float(self.setup.distance)
+        pitch_m = float(self.setup.pitch)
+
+        x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)
+        y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)
+        x0 = np.clip(x0, 0, nx - 1)
+        y0 = np.clip(y0, 0, ny - 1)
+
+        # xrayutilities QConversion
+        sampleAxis   = ['x+', 'y+', 'z-']
+        detectorAxis = ['x+']    # θ
+            # angle names expected from the dataframe in that exact order:
+        self.sample_angle_names   = ('omega','chi','phi')
+        self.detector_angle_names = ('theta',)
+
+        # beam direction: along +Y
+        r_i = (0, 1, 0)
+
+        # QConversion (sample first, then detector)
+        self.qconv = xu.experiment.QConversion(sampleAxis, detectorAxis, r_i, wl=lam_A)
+
+        # detector mapping so returned arrays are (ny, nx)
+        # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
+        # dir2 (cols) along +X
+        self.qconv.init_area(
+            'z-', 'x+',
+            cch1=y0, cch2=x0,
+            Nch1=ny, Nch2=nx,
+            distance=dist_m,
+            pwidth1=pitch_m, pwidth2=pitch_m,
+            detrot=0.0, tiltazimuth=0.0, tilt=0.0
+        )
+
+# class RSMBuilder:
+    # """
+    # 3D reciprocal-space maps (Q, HKL) from SPEC + TIFF using xrayutilities
+    # configured for a 4-circle diffractometer with area detector.
+
+    # Geometry (defaults):
+    #   - Four-circle ZXZ: φ(Z) → χ(X) → ω(Z). (sample angles = outer→inner)
+    #   - Beam along +Y (xrayutilities default).
+    #   - Detector axes set so per-pixel arrays come back as (ny, nx).
+    #   - Units: wavelength in Å; distance & pixel size in meters; beam center in pixels (0-based).
+
+    # Parameters
+    # ----------
+    # spec_file, tiff_dir : str
+    # use_dask, process_hklscan_only : bool
+    # selected_scans : Iterable[int] | None
+    # ub_includes_2pi : bool
+    # center_is_one_based : bool
+    # fourc_mode : {"ZXZ","ZYX"}
+    # motor_map : dict
+    #     logical→column names mapping. Defaults include {"omega":"th","chi":"chi","phi":"phi","tth":"tth"}.
+    # two_theta_axis : {"x+","x-","y+","y-","z+","z-"} or ""
+    #     Detector arm rotation axis (2θ). Use "" to disable if you truly have no 2θ motor.
+    # dtype : numpy dtype
+    # """
+
+    # def __init__(
+    #     self,
+    #     spec_file,
+    #     tiff_dir,
+    #     *,
+    #     use_dask: bool = False,
+    #     process_hklscan_only: bool = False,
+    #     selected_scans=None,
+    #     ub_includes_2pi: bool = True,
+    #     center_is_one_based: bool = False,
+    #     fourc_mode: str = "ZXZ",
+    #     motor_map: dict | None = None,
+    #     two_theta_axis: str = "z+",
+    #     dtype=np.float32,
+    # ):
+    #     self.dtype = dtype
+    #     self.ub_includes_2pi = bool(ub_includes_2pi)
+
         # ── SPEC + TIFF merge
-        exp = SpecParser(spec_file)
-        self.setup = exp.setup
-        self.UB = np.asarray(exp.crystal.UB, dtype=np.float64)
+        # exp = SpecParser(spec_file)
+        # self.setup = exp.setup
+        # self.UB = np.asarray(exp.crystal.UB, dtype=np.float64)
 
-        df_meta = exp.to_pandas()
-        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
-        df_meta["data_number"] = df_meta["data_number"].astype(int)
+        # df_meta = exp.to_pandas()
+        # df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+        # df_meta["data_number"] = df_meta["data_number"].astype(int)
 
-        rd = ReadData(tiff_dir, use_dask=use_dask)
-        df_int = rd.load_data()
+        # rd = ReadData(tiff_dir, use_dask=use_dask)
+        # df_int = rd.load_data()
 
-        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
-        if process_hklscan_only:
-            df = df[df["type"].str.lower().eq("hklscan", na=False)]
-        if selected_scans is not None:
-            df = df[df["scan_number"].isin(set(selected_scans))]
-        if df.empty:
-            raise ValueError("No frames to process after filtering/merge.")
-        self.df = df.reset_index(drop=True)
+        # df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
+        # if process_hklscan_only:
+        #     df = df[df["type"].str.lower().eq("hklscan", na=False)]
+        # if selected_scans is not None:
+        #     df = df[df["scan_number"].isin(set(selected_scans))]
+        # if df.empty:
+        #     raise ValueError("No frames to process after filtering/merge.")
+        # self.df = df.reset_index(drop=True)
 
         # ── image shape and geometry
-        ny, nx = df["intensity"].iat[0].shape
-        self.img_shape = (ny, nx)
+        # ny, nx = df["intensity"].iat[0].shape
+        # self.img_shape = (ny, nx)
 
-        # wavelength (Å) from setup or energy (keV)
-        lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
-        if lam_A and lam_A < 1e-3:  # meters by mistake → Å
-            lam_A *= 1e10
-        if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
-            lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
-        if lam_A <= 0.0:
-            raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
-        # print(f"Wavelength = {lam_A:.6f} Å")
+        # # wavelength (Å) from setup or energy (keV)
+        # lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
+        # if lam_A and lam_A < 1e-3:  # meters by mistake → Å
+        #     lam_A *= 1e10
+        # if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
+        #     lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
+        # if lam_A <= 0.0:
+        #     raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
+        # # print(f"Wavelength = {lam_A:.6f} Å")
 
-        # distance & pixel size in meters
-        dist_m  = float(self.setup.distance)
-        pitch_m = float(self.setup.pitch)
-        if not (np.isfinite(dist_m) and dist_m > 0 and np.isfinite(pitch_m) and pitch_m > 0):
-            raise ValueError("Distance/pixel size must be positive finite values.")
+        # # distance & pixel size in meters
+        # dist_m  = float(self.setup.distance)
+        # pitch_m = float(self.setup.pitch)
+        # if not (np.isfinite(dist_m) and dist_m > 0 and np.isfinite(pitch_m) and pitch_m > 0):
+        #     raise ValueError("Distance/pixel size must be positive finite values.")
 
-        # beam center (pixels) → 0-based if needed
-        x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)  # cols
-        y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)  # rows
-        # clamp into detector range (avoids native segfaults if metadata is off a bit)
-        x0 = float(np.clip(x0, 0, nx - 1))
-        y0 = float(np.clip(y0, 0, ny - 1))
+        # # beam center (pixels) → 0-based if needed
+        # x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)  # cols
+        # y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)  # rows
+        # # clamp into detector range (avoids native segfaults if metadata is off a bit)
+        # x0 = float(np.clip(x0, 0, nx - 1))
+        # y0 = float(np.clip(y0, 0, ny - 1))
 
         # ── 4-circle sample axis configuration (outer→inner)
         # fourc_mode = fourc_mode.upper()
@@ -122,29 +186,29 @@ class RSMBuilder:
         #         raise ValueError("two_theta_axis must be one of {'x±','y±','z±'} or ''.")
         #     detectorAxis = [tta]
 
-        sampleAxis   = ['x+', 'y+', 'z-']
-        detectorAxis = ['x+']    # θ
-            # angle names expected from the dataframe in that exact order:
-        self.sample_angle_names   = ('omega','chi','phi')
-        self.detector_angle_names = ('theta',)
+        # sampleAxis   = ['x+', 'y+', 'z-']
+        # detectorAxis = ['x+']    # θ
+        #     # angle names expected from the dataframe in that exact order:
+        # self.sample_angle_names   = ('omega','chi','phi')
+        # self.detector_angle_names = ('theta',)
 
-        # beam direction: along +Y
-        r_i = (0, 1, 0)
+        # # beam direction: along +Y
+        # r_i = (0, 1, 0)
 
-        # QConversion (sample first, then detector)
-        self.qconv = xu.experiment.QConversion(sampleAxis, detectorAxis, r_i, wl=lam_A)
+        # # QConversion (sample first, then detector)
+        # self.qconv = xu.experiment.QConversion(sampleAxis, detectorAxis, r_i, wl=lam_A)
 
-        # detector mapping so returned arrays are (ny, nx)
-        # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
-        # dir2 (cols) along +X
-        self.qconv.init_area(
-            'z+', 'x+',
-            cch1=y0, cch2=x0,
-            Nch1=ny, Nch2=nx,
-            distance=dist_m,
-            pwidth1=pitch_m, pwidth2=pitch_m,
-            detrot=0.0, tiltazimuth=0.0, tilt=0.0
-        )
+        # # detector mapping so returned arrays are (ny, nx)
+        # # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
+        # # dir2 (cols) along +X
+        # self.qconv.init_area(
+        #     'z-', 'x+',
+        #     cch1=y0, cch2=x0,
+        #     Nch1=ny, Nch2=nx,
+        #     distance=dist_m,
+        #     pwidth1=pitch_m, pwidth2=pitch_m,
+        #     detrot=0.0, tiltazimuth=0.0, tilt=0.0
+        # )
         print('Initialized QConversion area with:')
         print(f"  Sample Axis: {sampleAxis}")
         print(f"  Detector Axis: {detectorAxis}")
@@ -215,7 +279,8 @@ class RSMBuilder:
                 UB2pi = _TWO_PI * UB2pi
 
             h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
-            HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
+            # manually apply -1 to h to convert from XU to HKL convention
+            HKLf = np.stack((-h, k, l), axis=-1).astype(self.dtype, copy=False)
 
             Q_samp[idx] = Qf
             HKL[idx]    = HKLf
@@ -235,40 +300,99 @@ class RSMBuilder:
     def regrid_xu(
         self,
         *,
-        space: str = "q",                 # "q" or "hkl"
-        grid_shape=(200, 200, 200),       # (nx, ny, nz)
-        ranges=None,                      # ((xmin,xmax),(ymin,ymax),(zmin,zmax)) or None
-        fuzzy: bool = False,              # use FuzzyGridder3D
-        width=None,                       # scalar or (wx,wy,wz) for fuzzy (same units as axes)
-        normalize: str = "mean",          # "mean" → averaged; "sum" → accumulated
-        stream: bool = False              # iterate frame-by-frame to save RAM
+        space: str = "q",                # "q" or "hkl"
+        grid_shape: Union[int, Tuple[int,int,int]] = (200, 200, 200),
+        ranges: Optional[Tuple[Tuple[float,float], Tuple[float,float], Tuple[float,float]]] = None,
+        fuzzy: bool = False,
+        width: Optional[float] = None,
+        normalize: str = "mean",         # "mean", "sum", or None
+        stream: bool = False,
     ):
-        assert space.lower() in ("q", "hkl")
-        nx, ny, nz = map(int, grid_shape)
-        # arr = self.Q_samp if space.lower() == "q" else self.hkl
+        """
+        Scatter‐to‐grid re‐binning using xrayutilities Gridder3D (or FuzzyGridder3D).
+
+        Parameters
+        ----------
+        space
+            "q" to grid Q_samp or "hkl" to grid self.hkl.
+        grid_shape
+            int → base nx; ny,nz auto‐scaled by data extents ratios
+            (nx, ny, nz) → fixed shape
+            (nx, None, None) or (nx, -1, -1) → nx fixed; ny,nz auto‐scaled
+        ranges
+            ((minx,maxx),(miny,maxy),(minz,maxz)); if None, auto‐computed from data
+        fuzzy
+            if True use xu.FuzzyGridder3D; else xu.Gridder3D
+        width
+            fuzzy width (if fuzzy=True)
+        normalize
+            "mean" (default) → normalize by point‐counts; "sum" → sum weighting
+        stream
+            if True accumulate frame‐by‐frame (lower peak RAM, retains raw points)
+
+        Returns
+        -------
+        grid : ndarray
+            3D volume array of shape (nx, ny, nz)
+        (xaxis, yaxis, zaxis) : tuple of 1D arrays
+            bin centers along each dimension
+        """
+        # select data array
         arr = self.Q_samp if space.lower() == "q" else self.hkl
-        
-        #+        # ensure we have a (x,y,z) range tuple
+
+        # auto‐compute axis ranges if not provided
         if ranges is None:
-           ranges = tuple(
-               (float(np.nanmin(arr[..., i])), float(np.nanmax(arr[..., i])))
-               for i in range(3)
-           )
-
-       # build the gridder
-        G = (xu.FuzzyGridder3D if fuzzy else xu.Gridder3D)(nx, ny, nz)
-        if stream:
-           G.KeepData(True)
-
-       # apply the ranges (try fixed=True if supported)
+            ranges = tuple(
+                (
+                    float(np.nanmin(arr[..., i])),
+                    float(np.nanmax(arr[..., i])),
+                )
+                for i in range(3)
+            )
         (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
-        try:
-           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
-        except TypeError:
-           G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
-        print(ranges)
+        # spans for aspect ratios
+        Lx = max(1e-12, xmax - xmin)
+        Ly = max(1e-12, ymax - ymin)
+        Lz = max(1e-12, zmax - zmin)
 
+        # helper to auto‐scale ny,nz from nx
+        def _auto_shape(nx_val: int) -> Tuple[int,int,int]:
+            nxv = max(2, int(nx_val))
+            nyv = max(2, int(round(nxv * (Ly / Lx))))
+            nzv = max(2, int(round(nxv * (Lz / Lx))))
+            return nxv, nyv, nzv
+
+        # interpret grid_shape
+        if isinstance(grid_shape, int):
+            nx, ny, nz = _auto_shape(grid_shape)
+        else:
+            gx = list(grid_shape)
+            if len(gx) != 3:
+                raise ValueError("grid_shape must be int or length‐3 tuple.")
+            nx = gx[0]
+            # auto‐compute missing dims
+            if gx[1] in (None, -1):
+                nx, ny, nz = _auto_shape(nx)
+            else:
+                ny = gx[1]
+                nz = gx[2] if gx[2] not in (None, -1) else _auto_shape(nx)[2]
+        nx, ny, nz = int(nx), int(ny), int(nz)
+
+        # build the gridder
+        Gridder = xu.FuzzyGridder3D if fuzzy else xu.Gridder3D
+        G = Gridder(nx, ny, nz)
         if stream:
+            G.KeepData(True)
+
+        # set data range (fixed=True if supported)
+        try:
+            G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
+        except TypeError:
+            G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+
+        # feed scattered points
+        if stream:
+            # per‐frame loop
             for i in range(self.intensity.shape[0]):
                 Xi = arr[i, ..., 0].ravel()
                 Yi = arr[i, ..., 1].ravel()
@@ -279,6 +403,7 @@ class RSMBuilder:
                 else:
                     G(Xi, Yi, Zi, Wi)
         else:
+            # all‐points at once
             X = arr[..., 0].ravel()
             Y = arr[..., 1].ravel()
             Z = arr[..., 2].ravel()
@@ -288,10 +413,74 @@ class RSMBuilder:
             else:
                 G(X, Y, Z, W)
 
-        G.Normalize(False if normalize.lower() == "sum" else True)
+        # normalize
+        do_norm = False if normalize and normalize.lower() == "sum" else True
+        G.Normalize(do_norm)
+
+        # extract results
         grid = G.data.astype(self.dtype, copy=False)
         xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
         return grid, (xax, yax, zax)
+    # def regrid_xu(
+    #     self,
+    #     *,
+    #     space: str = "q",                 # "q" or "hkl"
+    #     grid_shape=(200, 200, 200),       # (nx, ny, nz)
+    #     ranges=None,                      # ((xmin,xmax),(ymin,ymax),(zmin,zmax)) or None
+    #     fuzzy: bool = False,              # use FuzzyGridder3D
+    #     width=None,                       # scalar or (wx,wy,wz) for fuzzy (same units as axes)
+    #     normalize: str = "mean",          # "mean" → averaged; "sum" → accumulated
+    #     stream: bool = False              # iterate frame-by-frame to save RAM
+    # ):
+    #     assert space.lower() in ("q", "hkl")
+    #     nx, ny, nz = map(int, grid_shape)
+    #     # arr = self.Q_samp if space.lower() == "q" else self.hkl
+    #     arr = self.Q_samp if space.lower() == "q" else self.hkl
+        
+    #     #+        # ensure we have a (x,y,z) range tuple
+    #     if ranges is None:
+    #        ranges = tuple(
+    #            (float(np.nanmin(arr[..., i])), float(np.nanmax(arr[..., i])))
+    #            for i in range(3)
+    #        )
+
+    #    # build the gridder
+    #     G = (xu.FuzzyGridder3D if fuzzy else xu.Gridder3D)(nx, ny, nz)
+    #     if stream:
+    #        G.KeepData(True)
+
+    #    # apply the ranges (try fixed=True if supported)
+    #     (xmin, xmax), (ymin, ymax), (zmin, zmax) = ranges
+    #     try:
+    #        G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax, fixed=True)
+    #     except TypeError:
+    #        G.dataRange(xmin, xmax, ymin, ymax, zmin, zmax)
+    #     print(ranges)
+
+    #     if stream:
+    #         for i in range(self.intensity.shape[0]):
+    #             Xi = arr[i, ..., 0].ravel()
+    #             Yi = arr[i, ..., 1].ravel()
+    #             Zi = arr[i, ..., 2].ravel()
+    #             Wi = self.intensity[i].ravel()
+    #             if fuzzy and width is not None:
+    #                 G(Xi, Yi, Zi, Wi, width=width)
+    #             else:
+    #                 G(Xi, Yi, Zi, Wi)
+    #     else:
+    #         X = arr[..., 0].ravel()
+    #         Y = arr[..., 1].ravel()
+    #         Z = arr[..., 2].ravel()
+    #         W = self.intensity.ravel()
+    #         if fuzzy and width is not None:
+    #             G(X, Y, Z, W, width=width)
+    #         else:
+    #             G(X, Y, Z, W)
+
+    #     G.Normalize(False if normalize.lower() == "sum" else True)
+    #     grid = G.data.astype(self.dtype, copy=False)
+    #     xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
+    #     return grid, (xax, yax, zax)
 
     # ───────────────────────────────────────────────────────────────────────────
     # Optional NumPy-based regridders (kept as-is)
@@ -356,6 +545,9 @@ class RSMBuilder:
             self.Q_samp, self.hkl, self.intensity = Qc, Hc, Ic
             return None
         return Qc, Hc, Ic
+
+
+
 
 
 # Runnable version without tth support

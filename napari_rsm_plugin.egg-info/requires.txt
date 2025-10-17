@@ -1,3 +1,0 @@
-napari>=0.4.12
-magicgui
-numpy
