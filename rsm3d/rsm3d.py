@@ -35,30 +35,13 @@ class RSMBuilder:
         dtype=np.float32,
     ):
         self.setup, self.UB, self.df = loader.load()
-        print(self.df.columns)
-        # if loader.df is None or loader.setup is None or loader.UB is None:
-        #     raise ValueError("Loader must be loaded (call loader.load() before RSMBuilder).")
-
         self.dtype = np.dtype(dtype)
         self.ub_includes_2pi = bool(ub_includes_2pi)
 
-        # # Adopt loader data
-        # self.loader = loader
-        # self.setup = loader.setup
-        # self.UB = loader.UB
-        # self.df = loader.df
         # Image shape
         ny, nx = self.df["intensity"].iat[0].shape
         self.img_shape = (ny, nx)
-
         # Wavelength (Å)
-        # lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
-        # if 0.0 < lam_A < 1e-3:  # meters accidentally
-        #     lam_A *= 1e10
-        # if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
-        #     lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
-        # if lam_A <= 0.0:
-        #     raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
         lam_A = float(self.setup.wavelength)
         # Geometry
         dist_m = float(self.setup.distance)
