@@ -16,7 +16,65 @@ try:
 except ImportError:
     DASK_AVAILABLE = False
 
-class ReadData:
+from rsm3d.spec_parser import SpecParser
+
+class RSMDataLoader:
+    """
+    Load and merge SPEC metadata with TIFF intensity frames.
+    Provides (setup, UB, merged DataFrame).
+    """
+    def __init__(
+        self,
+        spec_file: str,
+        setup_file: str,
+        tiff_dir: str,
+        *,
+        use_dask: bool = False,
+        process_hklscan_only: bool = False,
+        selected_scans=None,
+    ):
+        self.spec_file = spec_file
+        self.setup_file = setup_file
+        self.tiff_dir = tiff_dir
+        self.use_dask = use_dask
+        self.process_hklscan_only = process_hklscan_only
+        self.selected_scans = selected_scans
+
+    def load(self):
+        exp = SpecParser(self.spec_file, self.setup_file)
+        setup = exp.setup
+        UB = np.asarray(exp.crystal.UB, dtype=np.float64)
+
+        # SPEC metadata
+        df_meta = exp.to_pandas()
+        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+        df_meta["data_number"] = df_meta["data_number"].astype(int)
+
+        # TIFF intensities
+        rd = ReadFrame(self.tiff_dir, use_dask=self.use_dask)
+        df_int = rd.load_data()
+
+        # Merge
+        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
+
+        # # Filters
+        # if self.process_hklscan_only:
+        #     df = df[df["type"].str.lower().eq("hklscan", na=False)]
+        # if self.selected_scans is not None:
+        #     df = df[df["scan_number"].isin(set(self.selected_scans))]
+        # Filters
+        if self.process_hklscan_only:
+            # fill NaNs then compare to "hklscan"
+            mask = df["type"].str.lower().fillna("") == "hklscan"
+            df = df[mask]
+        if self.selected_scans is not None:
+             df = df[df["scan_number"].isin(set(self.selected_scans))]
+        if df.empty:
+            raise ValueError("No frames to process after filtering/merge.")
+        return setup, UB, df.reset_index(drop=True)
+
+
+class ReadFrame:
     """
     Class to scan a directory for TIFF files matching a regex pattern,
     extract scan_number and data_number, keep 2D intensity arrays per frame,

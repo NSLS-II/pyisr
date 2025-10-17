@@ -4,124 +4,72 @@ from typing import Optional, Tuple, Union
 from scipy.interpolate import griddata
 import xrayutilities as xu
 
-from rsm3d.spec_parser import SpecParser
-from rsm3d.data_io import ReadData
 
 _TWO_PI = 2.0 * np.pi
 
-def _energy_keV_to_lambda_A(E_keV: float) -> float:
-    """λ[Å] = 12.398419843320026 / E[keV]."""
-    return 12.398419843320026 / float(E_keV)
-
 class RSMBuilder:
     """
-    3D reciprocal-space maps (Q, HKL) from SPEC + TIFF using xrayutilities
-    configured for a 4-circle diffractometer with area detector.
+    Build reciprocal-space maps from a prepared RSMDataLoader.
 
-    Geometry (defaults):
-      - Four-circle ZXZ: φ(Z) → χ(X) → ω(Z). (sample angles = outer→inner)
-      - Beam along +Y (xrayutilities default).
-      - Detector axes set so per-pixel arrays come back as (ny, nx).
-      - Units: wavelength in Å; distance & pixel size in meters; beam center in pixels (0-based).
+    Initialize with:
+        loader = RSMDataLoader(spec_file, tiff_dir, selected_scans=(21,))
+        loader.load()
+        builder = RSMBuilder(loader, ub_includes_2pi=True)
 
     Parameters
     ----------
-    spec_file, tiff_dir : str
-    use_dask, process_hklscan_only : bool
-    selected_scans : Iterable[int] | None
+    loader : RSMDataLoader
+        Pre-loaded data loader instance (must have .setup, .UB, .df).
     ub_includes_2pi : bool
+        If False, multiply UB by 2π before using with xrayutilities.
     center_is_one_based : bool
-    fourc_mode : {"ZXZ","ZYX"}
-    motor_map : dict
-        logical→column names mapping. Defaults include {"omega":"th","chi":"chi","phi":"phi","tth":"tth"}.
-    two_theta_axis : {"x+","x-","y+","y-","z+","z-"} or ""
-        Detector arm rotation axis (2θ). Use "" to disable if you truly have no 2θ motor.
-    dtype : numpy dtype
+        Adjust beam center indices if 1-based.
     """
-
     def __init__(
         self,
-        spec_file,
-        tiff_dir,
+        loader,
         *,
-        use_dask: bool = False,
-        process_hklscan_only: bool = False,
-        selected_scans=None,
+        motor_map: dict | None = None,
         ub_includes_2pi: bool = True,
         center_is_one_based: bool = False,
-        fourc_mode: str = "ZXZ",
-        motor_map: dict | None = None,
-        two_theta_axis: str = "z+",
         dtype=np.float32,
     ):
-        self.dtype = dtype
+        self.setup, self.UB, self.df = loader.load()
+        print(self.df.columns)
+        # if loader.df is None or loader.setup is None or loader.UB is None:
+        #     raise ValueError("Loader must be loaded (call loader.load() before RSMBuilder).")
+
+        self.dtype = np.dtype(dtype)
         self.ub_includes_2pi = bool(ub_includes_2pi)
 
-        # ── SPEC + TIFF merge
-        exp = SpecParser(spec_file)
-        self.setup = exp.setup
-        self.UB = np.asarray(exp.crystal.UB, dtype=np.float64)
-
-        df_meta = exp.to_pandas()
-        df_meta["scan_number"] = df_meta["scan_number"].astype(int)
-        df_meta["data_number"] = df_meta["data_number"].astype(int)
-
-        rd = ReadData(tiff_dir, use_dask=use_dask)
-        df_int = rd.load_data()
-
-        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
-        if process_hklscan_only:
-            df = df[df["type"].str.lower().eq("hklscan", na=False)]
-        if selected_scans is not None:
-            df = df[df["scan_number"].isin(set(selected_scans))]
-        if df.empty:
-            raise ValueError("No frames to process after filtering/merge.")
-        self.df = df.reset_index(drop=True)
-
-        # ── image shape and geometry
-        ny, nx = df["intensity"].iat[0].shape
+        # # Adopt loader data
+        # self.loader = loader
+        # self.setup = loader.setup
+        # self.UB = loader.UB
+        # self.df = loader.df
+        # Image shape
+        ny, nx = self.df["intensity"].iat[0].shape
         self.img_shape = (ny, nx)
 
-        # wavelength (Å) from setup or energy (keV)
-        lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
-        if lam_A and lam_A < 1e-3:  # meters by mistake → Å
-            lam_A *= 1e10
-        if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
-            lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
-        if lam_A <= 0.0:
-            raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
-        # print(f"Wavelength = {lam_A:.6f} Å")
-
-        # distance & pixel size in meters
-        dist_m  = float(self.setup.distance)
+        # Wavelength (Å)
+        # lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
+        # if 0.0 < lam_A < 1e-3:  # meters accidentally
+        #     lam_A *= 1e10
+        # if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
+        #     lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
+        # if lam_A <= 0.0:
+        #     raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
+        lam_A = float(self.setup.wavelength)
+        # Geometry
+        dist_m = float(self.setup.distance)
         pitch_m = float(self.setup.pitch)
-        if not (np.isfinite(dist_m) and dist_m > 0 and np.isfinite(pitch_m) and pitch_m > 0):
-            raise ValueError("Distance/pixel size must be positive finite values.")
 
-        # beam center (pixels) → 0-based if needed
-        x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)  # cols
-        y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)  # rows
-        # clamp into detector range (avoids native segfaults if metadata is off a bit)
-        x0 = float(np.clip(x0, 0, nx - 1))
-        y0 = float(np.clip(y0, 0, ny - 1))
+        x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)
+        y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)
+        x0 = np.clip(x0, 0, nx - 1)
+        y0 = np.clip(y0, 0, ny - 1)
 
-        # ── 4-circle sample axis configuration (outer→inner)
-        # fourc_mode = fourc_mode.upper()
-        # if fourc_mode not in {"ZXZ", "ZYX"}:
-        #     raise ValueError("fourc_mode must be 'ZXZ' or 'ZYX'.")
-        # if fourc_mode == "ZXZ":
-        #     sampleAxis = ['z+', 'x+', 'z+']   # φ(Z), χ(X), ω(Z)
-        # else:  # ZYX
-        #     sampleAxis = ['z+', 'y+', 'x+']   # φ(Z), χ(Y), ω(X)
-
-        # # ── Detector axis for 2θ (detector angles follow sample angles in area(*args))
-        # detectorAxis = []
-        # if two_theta_axis:
-        #     tta = two_theta_axis.lower()
-        #     if tta not in {"x+","x-","y+","y-","z+","z-"}:
-        #         raise ValueError("two_theta_axis must be one of {'x±','y±','z±'} or ''.")
-        #     detectorAxis = [tta]
-
+        # xrayutilities QConversion
         sampleAxis   = ['x+', 'y+', 'z-']
         detectorAxis = ['x+']    # θ
             # angle names expected from the dataframe in that exact order:
@@ -145,6 +93,139 @@ class RSMBuilder:
             pwidth1=pitch_m, pwidth2=pitch_m,
             detrot=0.0, tiltazimuth=0.0, tilt=0.0
         )
+
+# class RSMBuilder:
+    # """
+    # 3D reciprocal-space maps (Q, HKL) from SPEC + TIFF using xrayutilities
+    # configured for a 4-circle diffractometer with area detector.
+
+    # Geometry (defaults):
+    #   - Four-circle ZXZ: φ(Z) → χ(X) → ω(Z). (sample angles = outer→inner)
+    #   - Beam along +Y (xrayutilities default).
+    #   - Detector axes set so per-pixel arrays come back as (ny, nx).
+    #   - Units: wavelength in Å; distance & pixel size in meters; beam center in pixels (0-based).
+
+    # Parameters
+    # ----------
+    # spec_file, tiff_dir : str
+    # use_dask, process_hklscan_only : bool
+    # selected_scans : Iterable[int] | None
+    # ub_includes_2pi : bool
+    # center_is_one_based : bool
+    # fourc_mode : {"ZXZ","ZYX"}
+    # motor_map : dict
+    #     logical→column names mapping. Defaults include {"omega":"th","chi":"chi","phi":"phi","tth":"tth"}.
+    # two_theta_axis : {"x+","x-","y+","y-","z+","z-"} or ""
+    #     Detector arm rotation axis (2θ). Use "" to disable if you truly have no 2θ motor.
+    # dtype : numpy dtype
+    # """
+
+    # def __init__(
+    #     self,
+    #     spec_file,
+    #     tiff_dir,
+    #     *,
+    #     use_dask: bool = False,
+    #     process_hklscan_only: bool = False,
+    #     selected_scans=None,
+    #     ub_includes_2pi: bool = True,
+    #     center_is_one_based: bool = False,
+    #     fourc_mode: str = "ZXZ",
+    #     motor_map: dict | None = None,
+    #     two_theta_axis: str = "z+",
+    #     dtype=np.float32,
+    # ):
+    #     self.dtype = dtype
+    #     self.ub_includes_2pi = bool(ub_includes_2pi)
+
+        # ── SPEC + TIFF merge
+        # exp = SpecParser(spec_file)
+        # self.setup = exp.setup
+        # self.UB = np.asarray(exp.crystal.UB, dtype=np.float64)
+
+        # df_meta = exp.to_pandas()
+        # df_meta["scan_number"] = df_meta["scan_number"].astype(int)
+        # df_meta["data_number"] = df_meta["data_number"].astype(int)
+
+        # rd = ReadData(tiff_dir, use_dask=use_dask)
+        # df_int = rd.load_data()
+
+        # df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
+        # if process_hklscan_only:
+        #     df = df[df["type"].str.lower().eq("hklscan", na=False)]
+        # if selected_scans is not None:
+        #     df = df[df["scan_number"].isin(set(selected_scans))]
+        # if df.empty:
+        #     raise ValueError("No frames to process after filtering/merge.")
+        # self.df = df.reset_index(drop=True)
+
+        # ── image shape and geometry
+        # ny, nx = df["intensity"].iat[0].shape
+        # self.img_shape = (ny, nx)
+
+        # # wavelength (Å) from setup or energy (keV)
+        # lam_A = float(getattr(self.setup, "wavelength", 0.0) or 0.0)
+        # if lam_A and lam_A < 1e-3:  # meters by mistake → Å
+        #     lam_A *= 1e10
+        # if lam_A <= 0.0 and getattr(self.setup, "energy_keV", None):
+        #     lam_A = _energy_keV_to_lambda_A(float(self.setup.energy_keV))
+        # if lam_A <= 0.0:
+        #     raise ValueError("Need positive wavelength (Å) or energy (keV) in setup.")
+        # # print(f"Wavelength = {lam_A:.6f} Å")
+
+        # # distance & pixel size in meters
+        # dist_m  = float(self.setup.distance)
+        # pitch_m = float(self.setup.pitch)
+        # if not (np.isfinite(dist_m) and dist_m > 0 and np.isfinite(pitch_m) and pitch_m > 0):
+        #     raise ValueError("Distance/pixel size must be positive finite values.")
+
+        # # beam center (pixels) → 0-based if needed
+        # x0 = float(self.setup.xcenter) - (1.0 if center_is_one_based else 0.0)  # cols
+        # y0 = float(self.setup.ycenter) - (1.0 if center_is_one_based else 0.0)  # rows
+        # # clamp into detector range (avoids native segfaults if metadata is off a bit)
+        # x0 = float(np.clip(x0, 0, nx - 1))
+        # y0 = float(np.clip(y0, 0, ny - 1))
+
+        # ── 4-circle sample axis configuration (outer→inner)
+        # fourc_mode = fourc_mode.upper()
+        # if fourc_mode not in {"ZXZ", "ZYX"}:
+        #     raise ValueError("fourc_mode must be 'ZXZ' or 'ZYX'.")
+        # if fourc_mode == "ZXZ":
+        #     sampleAxis = ['z+', 'x+', 'z+']   # φ(Z), χ(X), ω(Z)
+        # else:  # ZYX
+        #     sampleAxis = ['z+', 'y+', 'x+']   # φ(Z), χ(Y), ω(X)
+
+        # # ── Detector axis for 2θ (detector angles follow sample angles in area(*args))
+        # detectorAxis = []
+        # if two_theta_axis:
+        #     tta = two_theta_axis.lower()
+        #     if tta not in {"x+","x-","y+","y-","z+","z-"}:
+        #         raise ValueError("two_theta_axis must be one of {'x±','y±','z±'} or ''.")
+        #     detectorAxis = [tta]
+
+        # sampleAxis   = ['x+', 'y+', 'z-']
+        # detectorAxis = ['x+']    # θ
+        #     # angle names expected from the dataframe in that exact order:
+        # self.sample_angle_names   = ('omega','chi','phi')
+        # self.detector_angle_names = ('theta',)
+
+        # # beam direction: along +Y
+        # r_i = (0, 1, 0)
+
+        # # QConversion (sample first, then detector)
+        # self.qconv = xu.experiment.QConversion(sampleAxis, detectorAxis, r_i, wl=lam_A)
+
+        # # detector mapping so returned arrays are (ny, nx)
+        # # dir1 (rows) along Z (use 'z-' to keep +Z up with row index increasing downward)
+        # # dir2 (cols) along +X
+        # self.qconv.init_area(
+        #     'z-', 'x+',
+        #     cch1=y0, cch2=x0,
+        #     Nch1=ny, Nch2=nx,
+        #     distance=dist_m,
+        #     pwidth1=pitch_m, pwidth2=pitch_m,
+        #     detrot=0.0, tiltazimuth=0.0, tilt=0.0
+        # )
         print('Initialized QConversion area with:')
         print(f"  Sample Axis: {sampleAxis}")
         print(f"  Detector Axis: {detectorAxis}")
