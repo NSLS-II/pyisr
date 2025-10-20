@@ -16586,7 +16586,7 @@ packages:
 - pypi: ./
   name: pyisr
   version: 0.1.0
-  sha256: 6830ce63268635710120e099f5e832e0f5d7586b5a8a1d22c9343eba4495ae07
+  sha256: 151ebf9989247d9f91e4db8422ae331d9c0d374ea2635c82a273218ba86e2c86
   requires_python: '>=3.9'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/pyopengl-3.1.10-pyh534df25_2.conda
