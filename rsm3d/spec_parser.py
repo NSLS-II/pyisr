@@ -735,9 +735,13 @@ class ExperimentSetup:
                         xpixels, ypixels, phi, theta, dtheta, energy
     Optional key: wavelength
     """
+    # REQUIRED_KEYS = (
+    #     "distance", "pitch", "ycenter", "xcenter",
+    #     "xpixels", "ypixels", "phi", "theta", "dtheta", "energy",
+    # )
     REQUIRED_KEYS = (
         "distance", "pitch", "ycenter", "xcenter",
-        "xpixels", "ypixels", "phi", "theta", "dtheta", "energy",
+        "xpixels", "ypixels", "energy",
     )
 
     def __init__(
@@ -748,9 +752,9 @@ class ExperimentSetup:
         xcenter: int,
         xpixels: int,
         ypixels: int,
-        phi: float,
-        theta: float,
-        dtheta: float,
+        # phi: float,
+        # theta: float,
+        # dtheta: float,
         energy: float,
         wavelength: float | None = None,
     ):
@@ -762,9 +766,9 @@ class ExperimentSetup:
         self.xpixels = xpixels
         self.ypixels = ypixels
         # scan angles
-        self.phi = phi
-        self.theta = theta
-        self.dtheta = dtheta
+        # self.phi = phi
+        # self.theta = theta
+        # self.dtheta = dtheta
         # beam energy
         self.energy = energy
         self.energy_keV = energy
@@ -819,7 +823,7 @@ class ExperimentSetup:
             f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
             f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
             f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
-            f"theta={self.theta}°, phi={self.phi}°, dtheta={self.dtheta}°, "
+            # f"theta={self.theta}°, phi={self.phi}°, dtheta={self.dtheta}°, "
             f"energy={self.energy} eV, wavelength={self.wavelength} Å>"
         )
 

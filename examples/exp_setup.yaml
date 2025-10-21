@@ -3,10 +3,10 @@ distance: 0.78105        # meters
 pitch: 7.5e-05           # meters
 ycenter: 257             # pixel index
 xcenter: 515             # pixel index
-xpixels: 1030            # number of pixels (X)
 ypixels: 514             # number of pixels (Y)
-phi: 0.0                 # degrees
-theta: 15.3069           # degrees
-dtheta: 0.04             # degrees
+xpixels: 1030            # number of pixels (X)
+# phi: 0.0                 # degrees
+# theta: 15.3069           # degrees
+# dtheta: 0.04             # degrees
 energy: 11.470        # KeV
 wavelength: None     # Angstroms (required here; remove if you plan to derive externally)
