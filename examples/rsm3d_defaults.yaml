@@ -1,0 +1,35 @@
+data:
+  spec_file: null
+  tiff_dir: null
+  scans: null
+  only_hkl: null
+experiment:
+  distance: 0.78105
+  pitch: 7.5e-05
+  ycenter: 257
+  xcenter: 515
+  xpixels: 1030
+  ypixels: 514
+  energy: 11.47
+  wavelength: null
+build:
+  ub_includes_2pi: null
+  center_is_one_based: null
+crop:
+  enable: null
+  y_min: 240
+  y_max: 510
+  x_min: 380
+  x_max: 610
+regrid:
+  space: null
+  grid_shape: null
+  fuzzy: null
+  fuzzy_width: null
+  normalize: null
+view:
+  log_view: null
+  cmap: null
+  rendering: null
+  contrast_lo: null
+  contrast_hi: null
