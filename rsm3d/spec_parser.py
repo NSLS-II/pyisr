@@ -721,6 +721,7 @@ import sys
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
+from pyparsing import line
 import yaml
 from pathlib import Path
 
@@ -992,29 +993,55 @@ class ScanAngles:
         if not o0_names:
             raise RuntimeError("Missing global #O0 line in SPEC file")
 
+        # results = []
+        # cur_scan = None
+        # cur_type = None
+        # p0_map   = {}
+        # data_idx = {}
+        # in_data  = False
+        # counter  = 0
+        # current_ub = None   # per-scan UB
+        
         results = []
         cur_scan = None
         cur_type = None
+        skip_current = False      # ignore 'ascan' scans
         p0_map   = {}
         data_idx = {}
         in_data  = False
         counter  = 0
-        current_ub = None   # per-scan UB
+        current_ub = None         # per-scan UB
 
         with open(self.filename) as f:
             for raw in f:
                 line = raw.strip()
 
-                # New scan: reset state variables.
+                # # New scan: reset state variables.
+                # if line.startswith('#S '):
+                #     parts = line.split()
+                #     cur_scan = int(parts[1])
+                #     cur_type = parts[2] if len(parts) > 2 else ''
+                #     p0_map.clear()
+                #     data_idx.clear()
+                #     in_data = False
+                #     counter = 0
+                #     current_ub = None   # reset per-scan UB for new scan
+                #     continue
+                # New scan: reset state; mark ascans to skip
                 if line.startswith('#S '):
                     parts = line.split()
                     cur_scan = int(parts[1])
                     cur_type = parts[2] if len(parts) > 2 else ''
+                    skip_current = (cur_type.lower() == 'ascan')
                     p0_map.clear()
                     data_idx.clear()
                     in_data = False
                     counter = 0
-                    current_ub = None   # reset per-scan UB for new scan
+                    current_ub = None
+                    continue
+
+                # Skip all lines in ascans
+                if skip_current:
                     continue
 
                 # Look for UB update within a scan: "#G3" line.
@@ -1032,72 +1059,112 @@ class ScanAngles:
                     p0_map = {name: vals[i] for i, name in enumerate(o0_names)}
                     continue
 
-                # Data header: using "#L" line.
+                # # Data header: using "#L" line.
+                # if cur_scan is not None and line.startswith('#L '):
+                #     cols = line.split()[1:]
+                #     if cur_type.lower() == 'ascan':
+                #         axes = [c for c in self.ASCAN_AXES if c in cols]
+                #         if len(axes) != 1:
+                #             raise RuntimeError(f"Scan {cur_scan} (ascan): expected one of {self.ASCAN_AXES} in header")
+                #         scan_col = axes[0]
+                #         data_idx['scan_col'] = cols.index(scan_col)
+                #         for hk in ('H', 'K', 'L'):
+                #             data_idx[hk] = cols.index(hk)
+                #     elif cur_type.lower() == 'hklscan':
+                #         for ax in self.HKL_AXES:
+                #             data_idx[ax] = cols.index(ax)
+                #         for hk in ('H', 'K', 'L'):
+                #             data_idx[hk] = cols.index(hk)
+                #     else:
+                #         in_data = False
+                #         continue
+                #     in_data = True
+                #     continue
+
+                # Data header (#L): only parse hklscan
                 if cur_scan is not None and line.startswith('#L '):
                     cols = line.split()[1:]
-                    if cur_type.lower() == 'ascan':
-                        axes = [c for c in self.ASCAN_AXES if c in cols]
-                        if len(axes) != 1:
-                            raise RuntimeError(f"Scan {cur_scan} (ascan): expected one of {self.ASCAN_AXES} in header")
-                        scan_col = axes[0]
-                        data_idx['scan_col'] = cols.index(scan_col)
-                        for hk in ('H', 'K', 'L'):
-                            data_idx[hk] = cols.index(hk)
-                    elif cur_type.lower() == 'hklscan':
-                        for ax in self.HKL_AXES:
-                            data_idx[ax] = cols.index(ax)
-                        for hk in ('H', 'K', 'L'):
-                            data_idx[hk] = cols.index(hk)
-                    else:
+                    if cur_type.lower() != 'hklscan':
                         in_data = False
                         continue
+                    # hklscan columns
+                    for ax in self.HKL_AXES:
+                        data_idx[ax] = cols.index(ax)
+                    for hk in ('H', 'K', 'L'):
+                        data_idx[hk] = cols.index(hk)
                     in_data = True
                     continue
 
-                # Data rows.
+                # # Data rows.
+                # if in_data:
+                #     if not line or (line.startswith('#') and not line[1].isdigit()):
+                #         in_data = False
+                #         continue
+                #     parts = line.split()
+                #     if len(parts) < max(data_idx.values()) + 1:
+                #         continue
+                #     rec = {
+                #         'scan_number': f"{cur_scan:03d}",
+                #         'data_number': f"{counter:03d}",
+                #         'type': cur_type,
+                #         # Attach this scan's UB read from "#G3"
+                #         'ub': current_ub.copy() if current_ub is not None else None
+                #     }
+                #     if cur_type.lower() == 'ascan':
+                #         rec.update({
+                #             'tth': p0_map.get('VTTH'),
+                #             'th':  p0_map.get('VTH'),
+                #             'chi': p0_map.get('Chi'),
+                #             'phi': p0_map.get('Phi'),
+                #             'h':   float(parts[data_idx['H']]),
+                #             'k':   float(parts[data_idx['K']]),
+                #             'l':   float(parts[data_idx['L']])
+                # #         })
+                #         val = float(parts[data_idx['scan_col']])
+                #         if scan_col == 'VTTH':
+                #             rec['tth'] = val
+                #         elif scan_col == 'VTH':
+                #             rec['th'] = val
+                #         elif scan_col == 'Phi':
+                #             rec['phi'] = val
+                #         elif scan_col == 'Chi':
+                #             rec['chi'] = val
+                #     else:  # For hklscan.
+                #         rec.update({
+                #             'tth': float(parts[data_idx['VTTH']]),
+                #             'th':  float(parts[data_idx['VTH']]),
+                #             'chi': float(parts[data_idx['Chi']]),
+                #             'phi': float(parts[data_idx['Phi']]),
+                #             'h':   float(parts[data_idx['H']]),
+                #             'k':   float(parts[data_idx['K']]),
+                #             'l':   float(parts[data_idx['L']])
+                #         })
+                #     results.append(rec)
+                #     counter += 1
+                                # Data rows: only for hklscan
                 if in_data:
                     if not line or (line.startswith('#') and not line[1].isdigit()):
-                        in_data = False
-                        continue
+                       in_data = False
+                       continue
                     parts = line.split()
                     if len(parts) < max(data_idx.values()) + 1:
-                        continue
+                       continue
                     rec = {
-                        'scan_number': f"{cur_scan:03d}",
-                        'data_number': f"{counter:03d}",
-                        'type': cur_type,
-                        # Attach this scan's UB read from "#G3"
-                        'ub': current_ub.copy() if current_ub is not None else None
+                       'scan_number': f"{cur_scan:03d}",
+                       'data_number': f"{counter:03d}",
+                       'type': cur_type,
+                       'ub': current_ub.copy() if current_ub is not None else None
                     }
-                    if cur_type.lower() == 'ascan':
-                        rec.update({
-                            'tth': p0_map.get('VTTH'),
-                            'th':  p0_map.get('VTH'),
-                            'chi': p0_map.get('Chi'),
-                            'phi': p0_map.get('Phi'),
-                            'h':   float(parts[data_idx['H']]),
-                            'k':   float(parts[data_idx['K']]),
-                            'l':   float(parts[data_idx['L']])
-                        })
-                        val = float(parts[data_idx['scan_col']])
-                        if scan_col == 'VTTH':
-                            rec['tth'] = val
-                        elif scan_col == 'VTH':
-                            rec['th'] = val
-                        elif scan_col == 'Phi':
-                            rec['phi'] = val
-                        elif scan_col == 'Chi':
-                            rec['chi'] = val
-                    else:  # For hklscan.
-                        rec.update({
-                            'tth': float(parts[data_idx['VTTH']]),
-                            'th':  float(parts[data_idx['VTH']]),
-                            'chi': float(parts[data_idx['Chi']]),
-                            'phi': float(parts[data_idx['Phi']]),
-                            'h':   float(parts[data_idx['H']]),
-                            'k':   float(parts[data_idx['K']]),
-                            'l':   float(parts[data_idx['L']])
-                        })
+                    # parse hklscan fields
+                    rec.update({
+                        'tth': float(parts[data_idx['VTTH']]),
+                        'th':  float(parts[data_idx['VTH']]),
+                        'chi': float(parts[data_idx['Chi']]),
+                        'phi': float(parts[data_idx['Phi']]),
+                        'h':   float(parts[data_idx['H']]),
+                        'k':   float(parts[data_idx['K']]),
+                        'l':   float(parts[data_idx['L']]),
+                    })
                     results.append(rec)
                     counter += 1
         return results
