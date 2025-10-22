@@ -727,18 +727,17 @@ from pathlib import Path
 
 class ExperimentSetup:
     """
-    Load experiment parameters from a YAML file.  Wavelength is optional:
+    Load experiment parameters from a YAML file. Wavelength is optional:
       • if provided and >1e-3 Å, used directly
       • if provided in meters (<1e-3), converted to Å
-      • if omitted or non‐positive, computed from energy [Å] = 12.3984193 / E[keV]
-    Required YAML keys: distance, pitch, ycenter, xcenter,
-                        xpixels, ypixels, phi, theta, dtheta, energy
-    Optional key: wavelength
+      • if omitted or non‐positive, computed from energy [Å] = 12.398419843320026 / E[keV]
+
+    Required keys (either top-level or inside `ExperimentSetup:`):
+      distance, pitch, ycenter, xcenter, xpixels, ypixels, energy
+
+    Optional key:
+      wavelength
     """
-    # REQUIRED_KEYS = (
-    #     "distance", "pitch", "ycenter", "xcenter",
-    #     "xpixels", "ypixels", "phi", "theta", "dtheta", "energy",
-    # )
     REQUIRED_KEYS = (
         "distance", "pitch", "ycenter", "xcenter",
         "xpixels", "ypixels", "energy",
@@ -752,29 +751,32 @@ class ExperimentSetup:
         xcenter: int,
         xpixels: int,
         ypixels: int,
-        # phi: float,
-        # theta: float,
-        # dtheta: float,
         energy: float,
         wavelength: float | None = None,
     ):
         # detector geometry
-        self.distance = distance
-        self.pitch = pitch
-        self.ycenter = ycenter
-        self.xcenter = xcenter
-        self.xpixels = xpixels
-        self.ypixels = ypixels
-        # scan angles
-        # self.phi = phi
-        # self.theta = theta
-        # self.dtheta = dtheta
-        # beam energy
-        self.energy = energy
-        self.energy_keV = energy
+        self.distance = float(distance)
+        self.pitch = float(pitch)
+        self.ycenter = int(ycenter)
+        self.xcenter = int(xcenter)
+        self.xpixels = int(xpixels)
+        self.ypixels = int(ypixels)
 
-        # wavelength handling
-        # wavelength handling: allow None, numeric, or numeric‐string; fallback to energy
+        # beam energy (keV)
+        self.energy = float(energy)
+        self.energy_keV = float(energy)
+
+        # basic validation
+        if self.distance <= 0:
+            raise ValueError("ExperimentSetup: 'distance' must be > 0")
+        if self.pitch <= 0:
+            raise ValueError("ExperimentSetup: 'pitch' must be > 0")
+        if self.xpixels <= 0 or self.ypixels <= 0:
+            raise ValueError("ExperimentSetup: 'xpixels' and 'ypixels' must be > 0")
+        if self.energy_keV <= 0:
+            raise ValueError("ExperimentSetup: 'energy' (keV) must be > 0")
+
+        # wavelength handling: allow None, numeric, or numeric-string; fallback to energy
         lam_A: float | None = None
         if wavelength is not None:
             try:
@@ -788,34 +790,114 @@ class ExperimentSetup:
 
         # if missing or non-positive, compute from energy
         if lam_A is None or lam_A <= 0.0:
-            if self.energy_keV > 0.0:
-                lam_A = self._energy_keV_to_lambda_A(self.energy_keV)
-            else:
-                raise ValueError("ExperimentSetup: energy must be > 0 to derive wavelength")
+            lam_A = self._energy_keV_to_lambda_A(self.energy_keV)
 
         if lam_A <= 0.0:
             raise ValueError("ExperimentSetup: computed wavelength is non-positive")
         self.wavelength = lam_A
-       
-    def _energy_keV_to_lambda_A(self, E_keV: float) -> float:
+
+    @staticmethod
+    def _energy_keV_to_lambda_A(E_keV: float) -> float:
         """λ[Å] = 12.398419843320026 / E[keV]."""
         return 12.398419843320026 / float(E_keV)
+
+    # ---------- YAML helpers ----------
+    @staticmethod
+    def _to_float(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            # tolerate strings like "1_024" or with spaces
+            try:
+                return float(str(v).replace("_", "").strip())
+            except Exception:
+                raise ValueError(f"Expected float-compatible value, got {v!r}")
+
+    @staticmethod
+    def _to_int(v):
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            try:
+                return int(float(str(v).replace("_", "").strip()))
+            except Exception:
+                raise ValueError(f"Expected int-compatible value, got {v!r}")
+
+    @classmethod
+    def _extract_section(cls, data: dict) -> dict:
+        """
+        Accept either flat YAML or nested mappings.
+        Priority:
+          1) data["ExperimentSetup"]
+          2) data["experiment"]
+          3) data["experiment_setup"]
+          4) flat top-level (data itself)
+          5) any nested dict that seems to contain necessary keys
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Top-level YAML must be a mapping of keys to values.")
+
+        # common section names
+        for key in ("ExperimentSetup", "experiment", "experiment_setup"):
+            sec = data.get(key)
+            if isinstance(sec, dict):
+                return sec
+
+        # flat?
+        if any(k in data for k in cls.REQUIRED_KEYS):
+            return data
+
+        # last resort: scan nested dicts
+        for v in data.values():
+            if isinstance(v, dict) and any(k in v for k in cls.REQUIRED_KEYS):
+                return v
+
+        # nothing suitable found
+        raise ValueError(
+            "Could not find experiment setup in YAML. "
+            "Expected an 'ExperimentSetup' section or flat keys."
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path):
         p = Path(path)
         if not p.is_file():
             raise FileNotFoundError(f"Experiment YAML not found: {p}")
+
         with p.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if not isinstance(data, dict):
-            raise ValueError("Top-level YAML must be a mapping of keys to values.")
-        missing = [k for k in cls.REQUIRED_KEYS if k not in data]
+            doc = yaml.safe_load(f) or {}
+
+        sec = cls._extract_section(doc)
+
+        # Build a merged view that allows some keys to be at top-level and some inside the section
+        merged = {}
+        for k in cls.REQUIRED_KEYS + ("wavelength",):
+            if k in sec:
+                merged[k] = sec[k]
+            elif k in doc:
+                merged[k] = doc[k]
+
+        # Validate presence
+        missing = [k for k in cls.REQUIRED_KEYS if merged.get(k) in (None, "", "None", "null")]
         if missing:
-            raise ValueError(f"Missing required keys in YAML: {missing!r}")
-        # extract required params + optional wavelength
-        params = {k: data[k] for k in cls.REQUIRED_KEYS}
-        params["wavelength"] = data.get("wavelength", None)
+            raise ValueError(f"Missing required keys in YAML: {missing}")
+
+        # Coerce types
+        params = {
+            "distance":  cls._to_float(merged["distance"]),
+            "pitch":     cls._to_float(merged["pitch"]),
+            "ycenter":   cls._to_int(merged["ycenter"]),
+            "xcenter":   cls._to_int(merged["xcenter"]),
+            "xpixels":   cls._to_int(merged["xpixels"]),
+            "ypixels":   cls._to_int(merged["ypixels"]),
+            "energy":    cls._to_float(merged["energy"]),
+            "wavelength": merged.get("wavelength", None),
+        }
+
         return cls(**params)
 
     def __repr__(self):
@@ -823,9 +905,98 @@ class ExperimentSetup:
             f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
             f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
             f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
-            # f"theta={self.theta}°, phi={self.phi}°, dtheta={self.dtheta}°, "
-            f"energy={self.energy} eV, wavelength={self.wavelength} Å>"
+            f"energy={self.energy} keV, wavelength={self.wavelength} Å>"
         )
+
+# class ExperimentSetup:
+#     """
+#     Load experiment parameters from a YAML file.  Wavelength is optional:
+#       • if provided and >1e-3 Å, used directly
+#       • if provided in meters (<1e-3), converted to Å
+#       • if omitted or non‐positive, computed from energy [Å] = 12.3984193 / E[keV]
+#     Required YAML keys: distance, pitch, ycenter, xcenter,
+#                         xpixels, ypixels, phi, theta, dtheta, energy
+#     Optional key: wavelength
+#     """
+#     REQUIRED_KEYS = (
+#         "distance", "pitch", "ycenter", "xcenter",
+#         "xpixels", "ypixels", "energy",
+#     )
+
+#     def __init__(
+#         self,
+#         distance: float,
+#         pitch: float,
+#         ycenter: int,
+#         xcenter: int,
+#         xpixels: int,
+#         ypixels: int,
+#         energy: float,
+#         wavelength: float | None = None,
+#     ):
+#         # detector geometry
+#         self.distance = distance
+#         self.pitch = pitch
+#         self.ycenter = ycenter
+#         self.xcenter = xcenter
+#         self.xpixels = xpixels
+#         self.ypixels = ypixels
+#         # beam energy
+#         self.energy = energy
+#         self.energy_keV = energy
+
+#         # wavelength handling
+#         # wavelength handling: allow None, numeric, or numeric‐string; fallback to energy
+#         lam_A: float | None = None
+#         if wavelength is not None:
+#             try:
+#                 lam_A = float(wavelength)
+#             except (TypeError, ValueError):
+#                 lam_A = None
+
+#         # if given in meters (small positive), convert to Å
+#         if lam_A is not None and 0.0 < lam_A < 1e-3:
+#             lam_A *= 1e10
+
+#         # if missing or non-positive, compute from energy
+#         if lam_A is None or lam_A <= 0.0:
+#             if self.energy_keV > 0.0:
+#                 lam_A = self._energy_keV_to_lambda_A(self.energy_keV)
+#             else:
+#                 raise ValueError("ExperimentSetup: energy must be > 0 to derive wavelength")
+
+#         if lam_A <= 0.0:
+#             raise ValueError("ExperimentSetup: computed wavelength is non-positive")
+#         self.wavelength = lam_A
+       
+#     def _energy_keV_to_lambda_A(self, E_keV: float) -> float:
+#         """λ[Å] = 12.398419843320026 / E[keV]."""
+#         return 12.398419843320026 / float(E_keV)
+
+#     @classmethod
+#     def from_yaml(cls, path: str | Path):
+#         p = Path(path)
+#         if not p.is_file():
+#             raise FileNotFoundError(f"Experiment YAML not found: {p}")
+#         with p.open("r", encoding="utf-8") as f:
+#             data = yaml.safe_load(f)
+#         if not isinstance(data, dict):
+#             raise ValueError("Top-level YAML must be a mapping of keys to values.")
+#         missing = [k for k in cls.REQUIRED_KEYS if k not in data]
+#         if missing:
+#             raise ValueError(f"Missing required keys in YAML: {missing!r}")
+#         # extract required params + optional wavelength
+#         params = {k: data[k] for k in cls.REQUIRED_KEYS}
+#         params["wavelength"] = data.get("wavelength", None)
+#         return cls(**params)
+
+#     def __repr__(self):
+#         return (
+#             f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
+#             f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
+#             f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
+#             f"energy={self.energy} eV, wavelength={self.wavelength} Å>"
+#         )
 
 # class ExperimentSetup:
 #     """Load experiment parameters strictly from a YAML file (no defaults)."""

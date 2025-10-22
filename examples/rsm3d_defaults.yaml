@@ -1,9 +1,10 @@
 data:
-  spec_file: null
-  tiff_dir: null
-  scans: null
-  only_hkl: null
-experiment:
+  spec_file: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23
+  tiff_dir: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23_tiff_1017_tmp
+  scans: '21'
+  only_hkl: false
+  data_file: /Users/xiaogangyang/BNL.GOV Dropbox/Xiaogang Yang/isr_rsm3d/setup_6oct23_tiff_1017_tmp
+ExperimentSetup:
   distance: 0.78105
   pitch: 7.5e-05
   ycenter: 257
@@ -13,23 +14,25 @@ experiment:
   energy: 11.47
   wavelength: null
 build:
-  ub_includes_2pi: null
+  ub_includes_2pi: true
   center_is_one_based: null
 crop:
-  enable: null
-  y_min: 240
+  enable: true
+  y_min: 200
   y_max: 510
   x_min: 380
   x_max: 610
 regrid:
   space: null
-  grid_shape: null
+  grid_shape: 200,*,*
   fuzzy: null
   fuzzy_width: null
   normalize: null
 view:
-  log_view: null
-  cmap: null
+  log_view: true
+  cmap: inferno
   rendering: null
-  contrast_lo: null
-  contrast_hi: null
+  contrast_lo: 1.0
+  contrast_hi: 99.8
+export:
+  vtr_path: /Users/xiaogangyang/data_tmp/rsm3d_test

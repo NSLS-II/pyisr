@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from typing import Optional, Tuple, Iterable, Dict, Any
+from typing import Optional, Tuple, Iterable, Dict, Any, Sequence, Union
 
 try:
     import napari  # type: ignore
@@ -527,3 +527,218 @@ class RSMNapariViewer:
     def _require_viewer(self) -> None:
         if self.viewer is None:
             raise RuntimeError("Call launch() before adding overlays or flipping axes.")
+        
+        
+Array2D = np.ndarray  # (Y, X)
+
+def _robust_percentiles(a: np.ndarray, lo=1.0, hi=99.8) -> Tuple[float, float]:
+    a = np.asarray(a)
+    m = np.isfinite(a)
+    if not m.any():
+        return 0.0, 1.0
+    v = np.percentile(a[m], [lo, hi])
+    if v[0] == v[1]:
+        v[1] = v[0] + 1e-6
+    return float(v[0]), float(v[1])
+
+def _stack_list_of_2d(
+    frames: Sequence[Array2D],
+    *,
+    pad_value: float = np.nan,
+    dtype: np.dtype = np.float32,
+) -> np.ndarray:
+    if len(frames) == 0:
+        raise ValueError("Empty intensity list.")
+
+    shapes = []
+    clean_frames: list[np.ndarray] = []
+    for i, f in enumerate(frames):
+        if f is None:
+            continue
+        a = np.asarray(f)
+        if a.ndim != 2:
+            raise ValueError(f"Frame {i} is not 2D (shape={a.shape})")
+        shapes.append(a.shape)
+        clean_frames.append(a)
+
+    if not clean_frames:
+        raise ValueError("All frames were None/invalid.")
+
+    max_y = max(s[0] for s in shapes)
+    max_x = max(s[1] for s in shapes)
+    if all(s == (max_y, max_x) for s in shapes):
+        # Allow copy when needed by dropping copy=False
+        return np.stack([np.asarray(f, dtype=dtype) for f in clean_frames], axis=0)
+    stacked = np.full((len(clean_frames), max_y, max_x), pad_value, dtype=dtype)
+    for t, a in enumerate(clean_frames):
+        y, x = a.shape
+        stacked[t, :y, :x] = a
+    return stacked
+
+def _maybe_series_to_list(obj):
+    # Avoid hard dep on pandas; detect lightly
+    if hasattr(obj, "to_numpy") and hasattr(obj, "values") and hasattr(obj, "iloc"):
+        try:
+            return list(obj.to_numpy())
+        except Exception:
+            try:
+                return list(obj.values)
+            except Exception:
+                return list(obj)
+    return obj
+
+def _to_tyx_any(intensity: Union[np.ndarray, Sequence[Array2D]]) -> np.ndarray:
+    """
+    Accept:
+      • list/tuple of 2D arrays
+      • pandas Series of 2D arrays
+      • 1D object ndarray of 2D arrays
+      • 3D ndarray (T,Y,X)
+      • 2D ndarray (Y,X)
+    Returns (T, Y, X).
+    """
+    intensity = _maybe_series_to_list(intensity)
+
+    # List/tuple → stack
+    if isinstance(intensity, (list, tuple)):
+        return _stack_list_of_2d(intensity)
+
+    a = np.asarray(intensity)
+    # 3D numeric array already
+    if a.ndim == 3 and a.dtype != object:
+        return a
+    # 2D numeric array
+    if a.ndim == 2 and a.dtype != object:
+        return a[None, ...]
+
+    # 1D object array → elements should be 2D arrays
+    if a.ndim == 1 and a.dtype == object:
+        return _stack_list_of_2d(list(a))
+
+    raise ValueError(
+        f"Unsupported intensity shape {a.shape}; expected a list/Series/1D-object array "
+        f"of 2D frames, a 2D array, or a 3D (T,Y,X) array."
+    )
+
+class IntensityNapariViewer:
+    """
+    Napari viewer for raw intensity frames.
+
+    Parameters
+    ----------
+    intensity : list/Series/1D-object-ndarray of 2D frames OR 2D/3D ndarray
+    name : str
+    log_view : bool
+    contrast_percentiles : (float, float)
+    cmap : str
+    rendering : str  ('attenuated_mip', 'mip', 'translucent', 'additive', 'minip')
+    add_timeseries : bool   # (T,Y,X) with time slider
+    add_volume : bool       # treat T as Z for 3D
+    scale_tzyx : (float, float, float)  # spacing for (T/Z, Y, X)
+    pad_value : float       # pad value for mismatched frames
+    """
+    def __init__(
+        self,
+        intensity: Union[np.ndarray, Sequence[Array2D]],
+        *,
+        name: str = "Intensity",
+        log_view: bool = True,
+        contrast_percentiles: Tuple[float, float] = (1.0, 99.8),
+        cmap: str = "inferno",
+        rendering: str = "attenuated_mip",
+        add_timeseries: bool = True,
+        add_volume: bool = True,
+        scale_tzyx: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        pad_value: float = np.nan,
+    ):
+        self._name = name
+        self._log = bool(log_view)
+        self._p_lo, self._p_hi = map(float, contrast_percentiles)
+        self._cmap = cmap
+        self._rendering = rendering
+        self._add_ts = bool(add_timeseries)
+        self._add_vol = bool(add_volume)
+        self._scale = tuple(map(float, scale_tzyx))
+        self._pad_value = float(pad_value)
+
+        # Coerce to (T,Y,X)
+        tyx = _to_tyx_any(intensity)
+        # If we got here through an object array path, ensure dtype float32
+        self._raw_tyx = tyx.astype(np.float32, copy=False)
+
+        self._viewer: Optional[napari.Viewer] = None
+        self._layer_ts = None
+        self._layer_vol = None
+
+    @classmethod
+    def from_loader(cls, loader, **kwargs) -> "IntensityNapariViewer":
+        setup, UB, df = loader.load()
+        intensity = getattr(df, "intensity", None)
+        if intensity is None:
+            raise ValueError("Loader returned df without 'intensity'")
+        return cls(intensity, **kwargs)
+
+    def launch(self) -> napari.Viewer:
+        """Show only the intensity frames as 2D slices with a draggable ROI."""
+        v = napari.Viewer(title=self._name)
+        self._viewer = v
+
+        # Prepare data (F, H, W)
+        data = self._prepare_data(self._raw_tyx)
+        lo, hi = _robust_percentiles(data, self._p_lo, self._p_hi)
+
+        # Single image layer renamed to Intensity(F,H,W)
+        self._layer_ts = v.add_image(
+            data,
+            name=f"{self._name} (F,H,W)",
+            contrast_limits=(lo, hi),
+            colormap=self._cmap,
+            blending="translucent",
+            scale=self._scale,
+        )
+        v.dims.ndisplay = 2
+
+        # Hide any accidental extra layers
+        for layer in list(v.layers):
+            if layer is not self._layer_ts:
+                layer.visible = False
+
+        # Add a centered, half-size rectangle ROI on the H-W plane
+        _, H, W = data.shape
+        half_h = H / 4.0
+        half_w = W / 4.0
+        y0 = H / 2.0 - half_h
+        x0 = W / 2.0 - half_w
+        y1 = H / 2.0 + half_h
+        x1 = W / 2.0 + half_w
+        rect = np.array([
+            [y0, x0],
+            [y0, x1],
+            [y1, x1],
+            [y1, x0],
+        ])
+        shapes = v.add_shapes(
+            [rect],
+            shape_type="rectangle",
+            edge_color="red",
+            face_color="transparent",
+            name="ROI",
+        )
+        shapes.editable = True
+        shapes.mode = "transform"
+
+        return v
+
+    def close(self):
+        if self._viewer is not None:
+            try:
+                self._viewer.close()
+            except Exception:
+                pass
+            self._viewer = None
+
+    def _prepare_data(self, tyx: np.ndarray) -> np.ndarray:
+        a = tyx.astype(np.float32, copy=False)
+        if self._log:
+            a = np.log1p(np.maximum(a, 0.0))
+        return a
