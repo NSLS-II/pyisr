@@ -18,6 +18,7 @@ except ImportError:
 
 from rsm3d.spec_parser import SpecParser
 
+
 class RSMDataLoader:
     """
     Load and merge SPEC metadata with TIFF intensity frames.
@@ -45,103 +46,83 @@ class RSMDataLoader:
         setup = exp.setup
         UB = np.asarray(exp.crystal.UB, dtype=np.float64)
 
-        # SPEC metadata
         df_meta = exp.to_pandas()
         df_meta["scan_number"] = df_meta["scan_number"].astype(int)
         df_meta["data_number"] = df_meta["data_number"].astype(int)
 
-        # TIFF intensities
+        # 1. Filter metadata by selected_scans FIRST (if provided)
+        if self.selected_scans is not None:
+            wanted = set(self.selected_scans)
+            df_meta = df_meta[df_meta["scan_number"].isin(wanted)]
+            if df_meta.empty:
+                raise ValueError("No metadata rows match selected_scans.")
+
+        # 2. Load TIFF frames
         rd = ReadFrame(self.tiff_dir, use_dask=self.use_dask)
         df_int = rd.load_data()
 
-        # Merge
-        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
-
-        # # Filters
-        # if self.process_hklscan_only:
-        #     df = df[df["type"].str.lower().eq("hklscan", na=False)]
-        # if self.selected_scans is not None:
-        #     df = df[df["scan_number"].isin(set(self.selected_scans))]
-        # Filters
-        if self.process_hklscan_only:
-            # fill NaNs then compare to "hklscan"
-            mask = df["type"].str.lower().fillna("") == "hklscan"
-            df = df[mask]
+        # 3. If selected_scans provided, prune TIFF frames before merge
         if self.selected_scans is not None:
-             df = df[df["scan_number"].isin(set(self.selected_scans))]
+            df_int = df_int[df_int["scan_number"].isin(wanted)]
+            if len(df_int) == 0:
+                raise ValueError("No TIFF frames match selected_scans.")
+
+        # 4. Merge only the needed scans
+        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
         if df.empty:
-            raise ValueError("No frames to process after filtering/merge.")
+            raise ValueError("No frames after merging metadata and TIFF data.")
+
+        # 5. Now apply hklscan filtering (order changed per requirement)
+        if self.process_hklscan_only:
+            df = df[df["type"].str.lower().fillna("") == "hklscan"]
+            if df.empty:
+                raise ValueError("No frames remain after applying hklscan filter.")
+
         return setup, UB, df.reset_index(drop=True)
 
 
 class ReadFrame:
     """
-    Class to scan a directory for TIFF files matching a regex pattern,
-    extract scan_number and data_number, keep 2D intensity arrays per frame,
-    and return as a pandas or Dask DataFrame.
-
-    Parameters:
-        directory (str): Path to the directory containing TIFF files.
-        pattern (str, optional): Regex to match filenames and capture two groups:
-            scan_number and data_number. Defaults to r"^[^_]+_[^_]+_(\d{3})_(\d{3})_.*\\.tiff$".
-        use_dask (bool): Whether to use Dask for lazy loading (requires dask).
+    Scan a directory for TIFF files, capture scan/data numbers, store 2D arrays.
     """
     def __init__(self, directory, pattern=None, use_dask=False):
         self.directory = directory
         self.use_dask = use_dask and DASK_AVAILABLE
         if use_dask and not DASK_AVAILABLE:
             raise ImportError("Dask libraries not found. Install dask to use Dask functionality.")
-
         default_pattern = r"^[^_]+_[^_]+_(\d{3})_(\d{3})_.*\.tiff$"
         pattern_str = pattern or default_pattern
         self._pattern = re.compile(pattern_str)
 
     def _process_file(self, fname):
-        """Read one TIFF, extract scan/data numbers, and keep full 2D intensity."""
         match = self._pattern.match(fname)
         if not match:
             return None
-
         scan_number = int(match.group(1))
         data_number = int(match.group(2))
         path = os.path.join(self.directory, fname)
-
-        # Load full image as 2D (or higher-dim if multi-page) array
         img = tifffile.imread(path)
-
-        # Return one-row DataFrame with array in 'intensity' column
-        return pd.DataFrame([{  
+        return pd.DataFrame([{
             'scan_number': scan_number,
             'data_number': data_number,
             'intensity': img
         }])
 
     def load_data(self):
-        """
-        Load data from all matching files.
-        Returns pd.DataFrame or dd.DataFrame with each row per file,
-        intensity column holding the full array.
-        """
         files = [f for f in os.listdir(self.directory) if self._pattern.match(f)]
         if self.use_dask:
             delayed_dfs = [delayed(self._process_file)(f) for f in files]
-            # Provide metadata for Dask
             meta = {
                 'scan_number': 'i8',
                 'data_number': 'i8',
                 'intensity': object
             }
             return dd.from_delayed(delayed_dfs, meta=meta)
-        else:
-            dfs = [self._process_file(f) for f in files]
-            dfs = [df for df in dfs if df is not None]
-            return pd.concat(dfs, ignore_index=True)
-        
-        
-        
-        
-        
-        
+        dfs = [self._process_file(f) for f in files]
+        dfs = [df for df in dfs if df is not None]
+        return pd.concat(dfs, ignore_index=True)
+
+
 def write_rsm_vtk(polydata, scalar_name, filename):
     """
     Write a vtk XML PolyData (.vtp) file from a vtkPolyData object.
@@ -166,14 +147,14 @@ def export_rsm_vtps(Q_samp, hkl, intensity, prefix):
       {prefix}_hkl.vtp : hkl-space point cloud
     """
     # flatten
-    points_q   = Q_samp.reshape(-1,3)
-    points_hkl = hkl.reshape(-1,3)
-    intens     = intensity.ravel()
+    points_q = Q_samp.reshape(-1, 3)
+    points_hkl = hkl.reshape(-1, 3)
+    intens = intensity.ravel()
 
     # common vtkPolyData setup for both
     def make_poly(points):
         poly = vtk.vtkPolyData()
-        pts  = vtk.vtkPoints()
+        pts = vtk.vtkPoints()
         pts.SetData(numpy_support.numpy_to_vtk(points, deep=True))
         poly.SetPoints(pts)
         return poly
@@ -189,14 +170,12 @@ def export_rsm_vtps(Q_samp, hkl, intensity, prefix):
     poly_h = make_poly(points_hkl)
     poly_h.GetPointData().SetScalars(arr_I)
     write_rsm_vtk(poly_h, 'intensity', f"{prefix}_hkl.vtp")
-    
-    
 
 
 def write_polydata_legacy(polydata, filename, binary=False):
     """
     Write a vtk PolyData to a legacy .vtk file.
-    
+
     Parameters:
         polydata : vtkPolyData
         filename : str, output path ending in .vtk
@@ -252,10 +231,7 @@ def write_rsm_volume_to_vtk(rsm, edges, filename, binary=False):
     writer = vtk.vtkRectilinearGridWriter()
     writer.SetFileName(filename)
     writer.SetInputData(grid)
-    if binary:
-        writer.SetFileTypeToBinary()
-    else:
-        writer.SetFileTypeToASCII()
+    writer.SetFileTypeToBinary() if binary else writer.SetFileTypeToASCII()
     writer.Write()
 
 
@@ -292,45 +268,34 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
             edges = np.empty(n + 1, dtype=np.float64)
             edges[1:-1] = 0.5 * (arr[1:] + arr[:-1])
             # use local spacing at each end
-            edges[0]  = arr[0]  - 0.5 * (arr[1]  - arr[0])
+            edges[0] = arr[0] - 0.5 * (arr[1] - arr[0])
             edges[-1] = arr[-1] + 0.5 * (arr[-1] - arr[-2])
             return edges
-        raise ValueError(f"Coordinate array must have length {n} (centers) or {n+1} (edges); got {m}.")
+        raise ValueError(f"Coordinate array must have length {n} or {n+1}; got {m}.")
 
-    x_edges = _as_edges(x_c, nx)
-    y_edges = _as_edges(y_c, ny)
-    z_edges = _as_edges(z_c, nz)
+    x_edges = _as_edges(x_c, nx); y_edges = _as_edges(y_c, ny); z_edges = _as_edges(z_c, nz)
 
     # Ensure each axis is ascending; if not, flip both coords and data
     rsm_work = np.asarray(rsm, dtype=np.float32)
-
     if x_edges[1] < x_edges[0]:
-        x_edges = x_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=0)
+        x_edges = x_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=0)
     if y_edges[1] < y_edges[0]:
-        y_edges = y_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=1)
+        y_edges = y_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=1)
     if z_edges[1] < z_edges[0]:
-        z_edges = z_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=2)
+        z_edges = z_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=2)
 
     # Basic sanity: positive widths
-    if np.any(np.diff(x_edges) <= 0) or np.any(np.diff(y_edges) <= 0) or np.any(np.diff(z_edges) <= 0):
+    if (np.diff(x_edges) <= 0).any() or (np.diff(y_edges) <= 0).any() or (np.diff(z_edges) <= 0).any():
         raise ValueError("Non-positive bin width detected after adjustment.")
 
     # Build rectilinear grid
     grid = vtk.vtkRectilinearGrid()
-    # Points = bins+1 along each axis
     grid.SetDimensions(nx + 1, ny + 1, nz + 1)
-    # Also set explicit extent in point-index space (optional but robust)
     grid.SetExtent(0, nx, 0, ny, 0, nz)
 
     # Coordinate arrays (vtkDoubleArray)
     def _vtk_coords(arr):
-        v = numpy_support.numpy_to_vtk(arr, deep=True)
-        # vtkRectilinearGrid ignores name here; fine to leave unset or set a label
-        return v
-
+        return numpy_support.numpy_to_vtk(arr, deep=True)
     grid.SetXCoordinates(_vtk_coords(x_edges))
     grid.SetYCoordinates(_vtk_coords(y_edges))
     grid.SetZCoordinates(_vtk_coords(z_edges))
@@ -338,10 +303,8 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
     # Cell data: sanitize + Fortran order so I (x) is fastest (VTK IJK)
     np.nan_to_num(rsm_work, copy=False)
     intens = rsm_work.ravel(order="F")
-    vtk_int = numpy_support.numpy_to_vtk(intens, deep=True)
-    vtk_int.SetName("intensity")
-    grid.GetCellData().SetScalars(vtk_int)
-    grid.GetCellData().SetActiveScalars("intensity")
+    vtk_int = numpy_support.numpy_to_vtk(intens, deep=True); vtk_int.SetName("intensity")
+    grid.GetCellData().SetScalars(vtk_int); grid.GetCellData().SetActiveScalars("intensity")
 
     # Writer
     if not filename.lower().endswith(".vtr"):
@@ -359,23 +322,16 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
         try:
             w.SetDataModeToAppended()
         except AttributeError:
-            try:
-                w.SetDataModeToBinary()
-            except AttributeError:
-                pass
+            try: w.SetDataModeToBinary()
+            except AttributeError: pass
         if compress:
-            try:
-                w.SetCompressorTypeToZLib()
+            try: w.SetCompressorTypeToZLib()
             except AttributeError:
-                try:
-                    w.SetCompressor(vtk.vtkZLibDataCompressor())
-                except Exception:
-                    pass
+                try: w.SetCompressor(vtk.vtkZLibDataCompressor())
+                except Exception: pass
     else:
-        try:
-            w.SetDataModeToAscii()
-        except AttributeError:
-            pass
+        try: w.SetDataModeToAscii()
+        except AttributeError: pass
 
     if w.Write() != 1:
         raise RuntimeError(f"Failed to write VTR file: {filename}")
@@ -385,10 +341,10 @@ def read_hdf5_tiff_data(directory):
     """
     Reads TIFF-like data stored at '/entry/data/data' from all HDF5 files in the specified directory,
     but only processes files that contain 'data' in the filename.
-    
+
     Parameters:
         directory (str): The path to the directory containing HDF5 files.
-    
+
     Returns:
         A dictionary containing the TIFF data from each file, with filenames as keys.
     """
@@ -414,13 +370,14 @@ def read_hdf5_tiff_data(directory):
 
     return tiff_data_dict
 
+
 def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, overwrite=False):
     """
     Saves the given TIFF data as an image file in the specified output directory.
-    
+
     The function converts the data to 32-bit unsigned integers while preserving the original data range.
     This means that no scaling is applied.
-    
+
     Parameters:
         tiff_data (numpy array): The TIFF data array.
         output_dir (str): The directory to save the TIFF file.
@@ -431,11 +388,11 @@ def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, ove
     # Create output filename with .tiff extension
     output_filename = os.path.splitext(original_filename)[0] + ".tiff"
     output_path = os.path.join(output_dir, output_filename)
-    
+
     if not overwrite and os.path.exists(output_path):
         print(f"File {output_path} already exists. Skipping save.")
         return
-    
+
     # Ensure the data is numeric
     if tiff_data.dtype.kind in {'U', 'S'}:
         print(f"Data is not numerical: {tiff_data.dtype}. Skipping conversion for {original_filename}.")
@@ -456,10 +413,8 @@ def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, ove
     except Exception as e:
         print(f"Failed to save {output_path}: {e}")
 
-def remove_extreme(
-    image: np.ndarray,
-    threshold: float
-) -> np.ndarray:
+
+def remove_extreme(image: np.ndarray, threshold: float) -> np.ndarray:
     """
     Replace every pixel > threshold by the average of its 8-connected neighbors,
     excluding any neighbors that are themselves > threshold.
@@ -485,42 +440,31 @@ def remove_extreme(
     mask = arr > threshold  # pixels to replace
 
     # Reflect‐pad for edge handling
-    p   = np.pad(arr, 1, mode='reflect')
-    pm  = np.pad(mask, 1, mode='reflect')
+    p = np.pad(arr, 1, mode='reflect')
+    pm = np.pad(mask, 1, mode='reflect')
 
     # Extract the 8 neighbors and their masks
     p00, m00 = p[0:-2, 0:-2], pm[0:-2, 0:-2]
     p01, m01 = p[0:-2, 1:-1], pm[0:-2, 1:-1]
-    p02, m02 = p[0:-2, 2:  ], pm[0:-2, 2:  ]
+    p02, m02 = p[0:-2, 2:],   pm[0:-2, 2:]
     p10, m10 = p[1:-1, 0:-2], pm[1:-1, 0:-2]
-    p12, m12 = p[1:-1, 2:  ], pm[1:-1, 2:  ]
-    p20, m20 = p[2:  , 0:-2], pm[2:  , 0:-2]
-    p21, m21 = p[2:  , 1:-1], pm[2:  , 1:-1]
-    p22, m22 = p[2:  , 2:  ], pm[2:  , 2:  ]
+    p12, m12 = p[1:-1, 2:],   pm[1:-1, 2:]
+    p20, m20 = p[2:, 0:-2],   pm[2:, 0:-2]
+    p21, m21 = p[2:, 1:-1],   pm[2:, 1:-1]
+    p22, m22 = p[2:, 2:],     pm[2:, 2:]
 
     # Sum only non-extreme neighbors
-    valid00 = (~m00).astype(float); valid01 = (~m01).astype(float)
-    valid02 = (~m02).astype(float); valid10 = (~m10).astype(float)
-    valid12 = (~m12).astype(float); valid20 = (~m20).astype(float)
-    valid21 = (~m21).astype(float); valid22 = (~m22).astype(float)
-
-    neighbor_sum = (
-        p00*valid00 + p01*valid01 + p02*valid02 +
-        p10*valid10 +          p12*valid12 +
-        p20*valid20 + p21*valid21 + p22*valid22
-    )
-    neighbor_count = (
-        valid00 + valid01 + valid02 +
-        valid10 +           valid12 +
-        valid20 + valid21 + valid22
-    )
+    valid = [~m for m in (m00, m01, m02, m10, m12, m20, m21, m22)]
+    vals =  [p00, p01, p02, p10, p12, p20, p21, p22]
+    neighbor_sum = sum(v.astype(float) * val.astype(float) for v, val in zip(vals, valid))
+    neighbor_count = sum(val.astype(float) for val in valid)
 
     # Compute mean, avoid division by zero
     nbr_mean = np.zeros_like(arr)
-    nonzero = neighbor_count > 0
-    nbr_mean[nonzero] = neighbor_sum[nonzero] / neighbor_count[nonzero]
+    nz = neighbor_count > 0
+    nbr_mean[nz] = neighbor_sum[nz] / neighbor_count[nz]
     # For isolated extremes with no valid neighbors, clamp to threshold
-    nbr_mean[~nonzero] = threshold
+    nbr_mean[~nz] = threshold
 
     # Build result
     result = arr.copy()
@@ -531,7 +475,8 @@ def remove_extreme(
         result = np.rint(result).astype(image.dtype)
 
     return result
-       
+
+
 def hdf2tiff(input_directory: str, output_directory: str, overwrite: bool = False, extreme_threshold: float = None):
     """
     Main function to read HDF5 files, extract TIFF data, optionally remove extreme pixel values,
