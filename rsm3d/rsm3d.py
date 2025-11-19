@@ -330,7 +330,7 @@ class RSMBuilder:
 
             h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
             # manually apply -1 to h to convert from XU to HKL convention
-            HKLf = np.stack((-h, k, l), axis=-1).astype(self.dtype, copy=False)
+            HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
 
             Q_samp[idx] = Qf
             HKL[idx]    = HKLf
