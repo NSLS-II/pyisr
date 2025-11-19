@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 from scipy.interpolate import griddata
 import xrayutilities as xu
 
@@ -20,10 +20,21 @@ class RSMBuilder:
     ----------
     loader : RSMDataLoader
         Pre-loaded data loader instance (must have .setup, .UB, .df).
+    motor_map : dict | None
+        Optional mapping from logical motor names (omega, chi, phi, tth) to
+        DataFrame column names.
     ub_includes_2pi : bool
         If False, multiply UB by 2π before using with xrayutilities.
     center_is_one_based : bool
         Adjust beam center indices if 1-based.
+    dtype : numpy dtype
+        Numerical type used for intermediate arrays.
+    sample_axes : Sequence[str] | None
+        xrayutilities sample axes (outer→inner). Provide three entries; omit to
+        use the default ['z-', 'y-', 'x+'].
+    detector_axes : Sequence[str] | None
+        xrayutilities detector axes (outer→inner). Provide one entry or an
+        empty sequence to disable the detector rotation; omit to use ['z+'].
     """
     def __init__(
         self,
@@ -33,6 +44,8 @@ class RSMBuilder:
         ub_includes_2pi: bool = True,
         center_is_one_based: bool = False,
         dtype=np.float32,
+        sample_axes: Optional[Sequence[str]] = None,
+        detector_axes: Optional[Sequence[str]] = None,
     ):
         self.setup, self.UB, self.df = loader.load()
         self.dtype = np.dtype(dtype)
@@ -53,11 +66,46 @@ class RSMBuilder:
         y0 = np.clip(y0, 0, ny - 1)
 
         # xrayutilities QConversion
-        sampleAxis   = ['x+', 'y+', 'z-']
-        detectorAxis = ['x+']    # θ
-            # angle names expected from the dataframe in that exact order:
-        self.sample_angle_names   = ('omega','chi','phi')
+        self.sample_angle_names = ('omega', 'chi', 'phi')
         self.detector_angle_names = ('theta',)
+
+        default_sample_axes = ('z-', 'y-', 'x+')
+        default_detector_axes = ('z+',)
+
+        def _coerce_axes(user_axes, default):
+            if user_axes is None:
+                return list(default)
+            if isinstance(user_axes, str):
+                return [user_axes]
+            return list(user_axes)
+
+        def _validate_axes(name, axes, expected_len, *, allow_empty=False):
+            if not axes:
+                if allow_empty:
+                    return []
+                raise ValueError(f"{name} must contain {expected_len} entries.")
+            if expected_len is not None and len(axes) != expected_len:
+                raise ValueError(
+                    f"{name} must contain {expected_len} entries; got {len(axes)}."
+                )
+            if any(not isinstance(axis, str) for axis in axes):
+                raise TypeError(f"All entries in {name} must be strings.")
+            return axes
+
+        sampleAxis = _validate_axes(
+            "sample_axes",
+            _coerce_axes(sample_axes, default_sample_axes),
+            len(self.sample_angle_names),
+        )
+        detectorAxis = _validate_axes(
+            "detector_axes",
+            _coerce_axes(detector_axes, default_detector_axes),
+            len(self.detector_angle_names),
+            allow_empty=True,
+        )
+
+        self.sample_axes = tuple(sampleAxis)
+        self.detector_axes = tuple(detectorAxis)
 
         # beam direction: along +Y
         r_i = (0, 1, 0)
@@ -210,8 +258,8 @@ class RSMBuilder:
         #     detrot=0.0, tiltazimuth=0.0, tilt=0.0
         # )
         print('Initialized QConversion area with:')
-        print(f"  Sample Axis: {sampleAxis}")
-        print(f"  Detector Axis: {detectorAxis}")
+        print(f"  Sample Axis: {self.sample_axes}")
+        print(f"  Detector Axis: {self.detector_axes}")
         print(f"  Beam Direction: {r_i}")
         print(f"  Wavelength: {lam_A:.6f} Å")
         print(f"  Distance: {dist_m:.6f} m")
@@ -246,6 +294,7 @@ class RSMBuilder:
         Icube  = np.empty((Nf, ny, nx), dtype=self.dtype)
 
         UB2pi_default = (self.UB if self.ub_includes_2pi else (_TWO_PI * self.UB))
+        
 
         for idx, row in enumerate(df.itertuples(index=False)):
             # intensity array
@@ -277,6 +326,7 @@ class RSMBuilder:
             UB2pi = np.asarray(UB_row, dtype=np.float64) if UB_row is not None else UB2pi_default
             if not self.ub_includes_2pi and UB_row is not None:
                 UB2pi = _TWO_PI * UB2pi
+            
 
             h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
             # manually apply -1 to h to convert from XU to HKL convention
