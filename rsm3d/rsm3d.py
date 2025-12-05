@@ -8,34 +8,7 @@ import xrayutilities as xu
 _TWO_PI = 2.0 * np.pi
 
 class RSMBuilder:
-    """
-    Build reciprocal-space maps from a prepared RSMDataLoader.
-
-    Initialize with:
-        loader = RSMDataLoader(spec_file, tiff_dir, selected_scans=(21,))
-        loader.load()
-        builder = RSMBuilder(loader, ub_includes_2pi=True)
-
-    Parameters
-    ----------
-    loader : RSMDataLoader
-        Pre-loaded data loader instance (must have .setup, .UB, .df).
-    motor_map : dict | None
-        Optional mapping from logical motor names (omega, chi, phi, tth) to
-        DataFrame column names.
-    ub_includes_2pi : bool
-        If False, multiply UB by 2π before using with xrayutilities.
-    center_is_one_based : bool
-        Adjust beam center indices if 1-based.
-    dtype : numpy dtype
-        Numerical type used for intermediate arrays.
-    sample_axes : Sequence[str] | None
-        xrayutilities sample axes (outer→inner). Provide three entries; omit to
-        use the default ['z-', 'y-', 'x+'].
-    detector_axes : Sequence[str] | None
-        xrayutilities detector axes (outer→inner). Provide one entry or an
-        empty sequence to disable the detector rotation; omit to use ['z+'].
-    """
+    # ...existing code...
     def __init__(
         self,
         loader,
@@ -46,9 +19,27 @@ class RSMBuilder:
         dtype=np.float32,
         sample_axes: Optional[Sequence[str]] = None,
         detector_axes: Optional[Sequence[str]] = None,
+        
     ):
-        self.setup, self.UB, self.df = loader.load()
-        self.dtype = np.dtype(dtype)
+        loaded = loader.load()
+        if not isinstance(loaded, tuple):
+            raise TypeError("RSMBuilder expects loader.load() to return a tuple.")
+        if len(loaded) == 3:
+            self.setup, self.UB, self.df = loaded
+        elif len(loaded) == 2:
+            self.setup, self.df = loaded
+            self.UB = None
+        else:
+            raise ValueError("loader.load() must return (setup, df) or (setup, UB, df).")
+
+        self.UB = None if self.UB is None else np.asarray(self.UB, dtype=np.float64)
+        self._has_global_ub = self.UB is not None
+        self._row_has_ub = "ub" in self.df.columns and self.df["ub"].notna().any()
+        self._compute_hkl = self._has_global_ub or self._row_has_ub
+        self.dtype = dtype
+
+
+ 
         self.ub_includes_2pi = bool(ub_includes_2pi)
 
         # Image shape
@@ -544,13 +535,14 @@ class RSMBuilder:
         ]
 
     def regrid_intensity(self, method='sum', space='q'):
+        if space == 'hkl':
+            if not self._compute_hkl or self.hkl is None:
+                raise RuntimeError("HKL data not available because no UB matrices were supplied.")
         if space == 'q':
             if not hasattr(self, "edges"):
                 raise RuntimeError("Call setup_grid() or regrid_auto(space='q') first.")
             pts, edges = self.Q_samp.reshape(-1,3), self.edges
         else:
-            if not hasattr(self, "hkl_edges"):
-                raise RuntimeError("Call regrid_auto(space='hkl') first.")
             pts, edges = self.hkl.reshape(-1,3), self.hkl_edges
         vals = self.intensity.ravel().astype(np.float64, copy=False)
         H_sum, _ = np.histogramdd(pts, bins=edges, weights=vals)
@@ -563,6 +555,8 @@ class RSMBuilder:
         return Hm.astype(self.dtype, copy=False), edges
 
     def regrid_auto(self, space='q', grid_shape=(200,200,200), method='mean'):
+        if space == 'hkl' and (not self._compute_hkl or self.hkl is None):
+            raise RuntimeError("HKL data not available because no UB matrices were supplied.")
         arr = self.Q_samp if space=='q' else self.hkl
         ranges = tuple((arr[...,k].min(), arr[...,k].max()) for k in range(3))
         if space=='q':
@@ -589,10 +583,12 @@ class RSMBuilder:
         y0,y1 = (0,ny-1) if y_bound is None else y_bound
         x0,x1 = (0,nx-1) if x_bound is None else x_bound
         Qc = self.Q_samp[z0:z1+1, y0:y1+1, x0:x1+1, :]
-        Hc = self.hkl   [z0:z1+1, y0:y1+1, x0:x1+1, :]
+        Hc = None if self.hkl is None else self.hkl[z0:z1+1, y0:y1+1, x0:x1+1, :]
         Ic = self.intensity[z0:z1+1, y0:y1+1, x0:x1+1]
         if in_place:
-            self.Q_samp, self.hkl, self.intensity = Qc, Hc, Ic
+            self.Q_samp = Qc
+            self.hkl = Hc
+            self.intensity = Ic
             return None
         return Qc, Hc, Ic
 
