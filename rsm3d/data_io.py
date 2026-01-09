@@ -861,17 +861,31 @@ class RSMDataloader_CMS:
         if not isinstance(frames, pd.DataFrame) or frames.empty:
             raise ValueError("RSMDataloader_CMS: no TIFF frames found.")
 
+        ordered_scans: list[int] | None = None
+        order_map: dict[int, int] | None = None
         if self.selected_scans is not None:
             try:
                 if isinstance(self.selected_scans, numbers.Integral):
-                    wanted = {int(self.selected_scans)}
+                    ordered_scans = [int(self.selected_scans)]
                 else:
-                    wanted = {int(s) for s in self.selected_scans}
+                    ordered_scans = [int(s) for s in self.selected_scans]
             except TypeError:
-                wanted = {int(self.selected_scans)}
+                ordered_scans = [int(self.selected_scans)]
+            wanted = set(ordered_scans)
             frames = frames[frames["scan_number"].isin(wanted)]
             if frames.empty:
                 raise ValueError("RSMDataloader_CMS: no TIFF frames match selected_scans.")
+            frames = frames.copy()
+            frames["scan_number"] = frames["scan_number"].astype(int)
+            missing = [scan for scan in ordered_scans if scan not in frames["scan_number"].unique()]
+            if missing:
+                raise ValueError(f"RSMDataloader_CMS: missing requested scan_number(s): {missing}")
+            order_map = {scan: idx for idx, scan in enumerate(ordered_scans)}
+            frames["_scan_order"] = frames["scan_number"].map(order_map)
+            frames = frames.sort_values("_scan_order", kind="stable").drop(columns="_scan_order")
+        else:
+            frames = frames.copy()
+            frames["scan_number"] = frames["scan_number"].astype(int)
 
         intensities = frames["intensity"].tolist()
         if self.crop_window is not None:
@@ -879,7 +893,7 @@ class RSMDataloader_CMS:
 
         df = pd.DataFrame(
             {
-                "scan_number": frames["scan_number"].astype(int),
+                "scan_number": frames["scan_number"],
                 "intensity": intensities,
                 "tth": 0.0,
                 "th": 0.0,
@@ -887,4 +901,7 @@ class RSMDataloader_CMS:
                 "phi": 0.0,
             }
         )
+        if order_map is not None:
+            df["_scan_order"] = df["scan_number"].map(order_map)
+            df = df.sort_values("_scan_order", kind="stable").drop(columns="_scan_order")
         return setup, df.reset_index(drop=True)
