@@ -1,0 +1,12 @@
+# Experiment / detector parameters
+distance: 3.03        # meters
+pitch: 1.72e-04           # meters
+ycenter: 500             # pixel index
+xcenter: 500             # pixel index
+xpixels: 1000            # number of pixels (X)
+ypixels: 1000             # number of pixels (Y)
+             # degree          # degrees
+energy: None         # KeV
+wavelength: 0.9184     # Angstroms (required here; remove if you plan to derive externally)
+
+#beam position=(733, 1679-553)

@@ -1,10 +1,14 @@
 # read_data.py
 import os
 import re
+import numbers
+from typing import Optional
 import tifffile
 import pandas as pd
 import numpy as np
 import h5py
+from pathlib import Path
+import yaml
 import hdf5plugin
 import vtk
 from vtk.util import numpy_support
@@ -17,6 +21,7 @@ except ImportError:
     DASK_AVAILABLE = False
 
 from rsm3d.spec_parser import SpecParser
+
 
 class RSMDataLoader:
     """
@@ -40,108 +45,398 @@ class RSMDataLoader:
         self.process_hklscan_only = process_hklscan_only
         self.selected_scans = selected_scans
 
-    def load(self):
+    def load(self):       
+        setup = ExperimentSetup.from_yaml(self.setup_file)
         exp = SpecParser(self.spec_file, self.setup_file)
-        setup = exp.setup
-        UB = np.asarray(exp.crystal.UB, dtype=np.float64)
-
-        # SPEC metadata
         df_meta = exp.to_pandas()
         df_meta["scan_number"] = df_meta["scan_number"].astype(int)
         df_meta["data_number"] = df_meta["data_number"].astype(int)
 
-        # TIFF intensities
+        selected_list: list[int] = []
+        wanted: Optional[set[int]] = None
+        if self.selected_scans is not None:
+            if isinstance(self.selected_scans, numbers.Integral):
+                selected_list = [int(self.selected_scans)]
+            else:
+                try:
+                    selected_list = [int(s) for s in self.selected_scans]
+                except TypeError:
+                    selected_list = [int(self.selected_scans)]
+            wanted = set(selected_list)
+            df_meta = df_meta[df_meta["scan_number"].isin(wanted)]
+            if df_meta.empty:
+                raise ValueError("No metadata rows match selected_scans.")
+
+        # 2. Load TIFF frames
         rd = ReadFrame(self.tiff_dir, use_dask=self.use_dask)
         df_int = rd.load_data()
 
-        # Merge
-        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
+        # 3. If selected_scans provided, prune TIFF frames before merge
+        if wanted is not None:
+            df_int = df_int[df_int["scan_number"].isin(wanted)]
+            if len(df_int) == 0:
+                raise ValueError("No TIFF frames match selected_scans.")
 
-        # # Filters
-        # if self.process_hklscan_only:
-        #     df = df[df["type"].str.lower().eq("hklscan", na=False)]
-        # if self.selected_scans is not None:
-        #     df = df[df["scan_number"].isin(set(self.selected_scans))]
-        # Filters
-        if self.process_hklscan_only:
-            # fill NaNs then compare to "hklscan"
-            mask = df["type"].str.lower().fillna("") == "hklscan"
-            df = df[mask]
-        if self.selected_scans is not None:
-             df = df[df["scan_number"].isin(set(self.selected_scans))]
+        # 4. Merge only the needed scans
+        df = pd.merge(df_meta, df_int, on=["scan_number", "data_number"], how="inner")
         if df.empty:
-            raise ValueError("No frames to process after filtering/merge.")
-        return setup, UB, df.reset_index(drop=True)
+            raise ValueError("No frames after merging metadata and TIFF data.")
+
+        # 5. Now apply hklscan filtering (order changed per requirement)
+        if self.process_hklscan_only:
+            df = df[df["type"].str.lower().fillna("") == "hklscan"]
+            if df.empty:
+                raise ValueError("No frames remain after applying hklscan filter.")
+
+        df = df.reset_index(drop=True)
+
+        fallback_ub = np.asarray(exp.crystal.UB, dtype=np.float64)
+
+        # Resolve a default UB matrix, preferring scan-specific entries when a selection is provided.
+        def _resolve_default_ub(df_frames: pd.DataFrame, scans_to_check: list[int]) -> np.ndarray:
+            if "ub" not in df_frames.columns:
+                if scans_to_check:
+                    raise ValueError("SPEC metadata is missing UB matrices for the selected scans.")
+                return fallback_ub
+
+            def _scan_ub(scan_id: int) -> Optional[np.ndarray]:
+                rows = df_frames[df_frames["scan_number"] == scan_id]
+                if rows.empty:
+                    return None
+                candidates = []
+                for val in rows["ub"]:
+                    if val is None:
+                        continue
+                    arr = np.asarray(val, dtype=np.float64)
+                    if arr.shape != (3, 3):
+                        continue
+                    candidates.append(arr)
+                if not candidates:
+                    return None
+                base = candidates[0]
+                for other in candidates[1:]:
+                    if not np.allclose(base, other):
+                        raise ValueError(
+                            f"Inconsistent UB matrices encountered within scan {scan_id}."
+                        )
+                return base
+
+            if scans_to_check:
+                for scan_id in scans_to_check:
+                    scan_ub = _scan_ub(scan_id)
+                    if scan_ub is not None:
+                        return scan_ub.copy()
+                raise ValueError("Failed to locate a UB matrix for the requested scan(s).")
+
+            for scan_id in df_frames["scan_number"].unique():
+                scan_ub = _scan_ub(int(scan_id))
+                if scan_ub is not None:
+                    return scan_ub.copy()
+            return fallback_ub
+
+        UB = _resolve_default_ub(df, selected_list)
+
+        return setup, UB, df
+    
+
+class ExperimentSetup:
+    """
+    Load experiment parameters from a YAML file. Wavelength is optional:
+      • if energy is supplied (>0 keV), wavelength is computed from energy
+      • if energy is omitted/null, a valid wavelength must be provided
+      • sub-micrometer wavelengths (<1e-3) are interpreted as meters and converted to Å
+    Required keys (either top-level or inside `ExperimentSetup:`):
+      distance, pitch, ycenter, xcenter, xpixels, ypixels
+    One of energy or wavelength must be present.
+    """
+    REQUIRED_KEYS = (
+        "distance", "pitch", "ycenter", "xcenter",
+        "xpixels", "ypixels", "energy",
+    )
+
+    def __init__(
+        self,
+        distance: float,
+        pitch: float,
+        ycenter: int,
+        xcenter: int,
+        xpixels: int,
+        ypixels: int,
+        energy: float | None = None,
+        wavelength: float | None = None,
+    ):
+        self.distance = float(distance)
+        self.pitch = float(pitch)
+        self.ycenter = int(ycenter)
+        self.xcenter = int(xcenter)
+        self.xpixels = int(xpixels)
+        self.ypixels = int(ypixels)
+
+        if self.distance <= 0:
+            raise ValueError("ExperimentSetup: 'distance' must be > 0")
+        if self.pitch <= 0:
+            raise ValueError("ExperimentSetup: 'pitch' must be > 0")
+        if self.xpixels <= 0 or self.ypixels <= 0:
+            raise ValueError("ExperimentSetup: 'xpixels' and 'ypixels' must be > 0")
+
+        lam_input: float | None = None
+        if wavelength is not None:
+            if isinstance(wavelength, str):
+                cleaned = wavelength.strip().lower()
+                if cleaned not in {"", "none", "null"}:
+                    try:
+                        lam_input = float(wavelength)
+                    except ValueError as exc:
+                        raise ValueError("ExperimentSetup: wavelength must be numeric") from exc
+            else:
+                lam_input = float(wavelength)
+
+        if lam_input is not None and 0.0 < lam_input < 1e-3:
+            lam_input *= 1e10
+
+        self.energy = None
+        self.energy_keV = None
+
+        if energy is not None:
+            self.energy = float(energy)
+            self.energy_keV = self.energy
+            if self.energy_keV <= 0:
+                raise ValueError("ExperimentSetup: 'energy' (keV) must be > 0")
+            self.wavelength = self._energy_keV_to_lambda_A(self.energy_keV)
+        else:
+            if lam_input is None or lam_input <= 0.0:
+                raise ValueError("ExperimentSetup: wavelength must be provided and positive when energy is missing")
+            self.wavelength = lam_input
+            self.energy_keV = self._lambda_A_to_energy_keV(self.wavelength)
+            if self.energy_keV <= 0.0:
+                raise ValueError("ExperimentSetup: derived energy from wavelength is non-positive")
+            self.energy = self.energy_keV
+
+    @staticmethod
+    def _energy_keV_to_lambda_A(E_keV: float) -> float:
+        return 12.398419843320026 / float(E_keV)
+
+    @staticmethod
+    def _lambda_A_to_energy_keV(lambda_A: float) -> float:
+        return 12.398419843320026 / float(lambda_A)
+
+    @staticmethod
+    def _to_float(value):
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            try:
+                return float(str(value).replace("_", "").strip())
+            except Exception as exc:
+                raise ValueError(f"Expected float-compatible value, got {value!r}") from exc
+
+    @staticmethod
+    def _to_int(value):
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            try:
+                return int(float(str(value).replace("_", "").strip()))
+            except Exception as exc:
+                raise ValueError(f"Expected int-compatible value, got {value!r}") from exc
+
+    @classmethod
+    def from_yaml(cls, path: str | Path):
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"Experiment YAML not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+        sec = cls._extract_section(doc)
+        merged = {}
+        for k in cls.REQUIRED_KEYS + ("wavelength",):
+            if k in sec:
+                merged[k] = sec[k]
+            elif k in doc:
+                merged[k] = doc[k]
+
+        missing = [
+            k for k in cls.REQUIRED_KEYS
+            if k != "energy" and merged.get(k) in (None, "", "None", "null")
+        ]
+        if missing:
+            raise ValueError(f"Missing required keys in YAML: {missing}")
+
+        energy_raw = merged.get("energy")
+        if isinstance(energy_raw, str) and energy_raw.strip().lower() in {"", "none", "null"}:
+            energy_raw = None
+
+        wavelength_raw = merged.get("wavelength")
+        if isinstance(wavelength_raw, str) and wavelength_raw.strip().lower() in {"", "none", "null"}:
+            wavelength_raw = None
+
+        if energy_raw is None and wavelength_raw is None:
+            raise ValueError("Experiment YAML must provide either energy or wavelength.")
+
+        params = {
+            "distance":  cls._to_float(merged["distance"]),
+            "pitch":     cls._to_float(merged["pitch"]),
+            "ycenter":   cls._to_int(merged["ycenter"]),
+            "xcenter":   cls._to_int(merged["xcenter"]),
+            "xpixels":   cls._to_int(merged["xpixels"]),
+            "ypixels":   cls._to_int(merged["ypixels"]),
+            "energy":    cls._to_float(energy_raw) if energy_raw is not None else None,
+            "wavelength": cls._to_float(wavelength_raw) if wavelength_raw is not None else None,
+        }
+        return cls(**params)
+
+    def __repr__(self):
+        energy_display = self.energy_keV if self.energy_keV is not None else "N/A"
+        return (
+            f"<ExperimentSetup: distance={self.distance} m, pitch={self.pitch} m, "
+            f"xcenter={self.xcenter}, ycenter={self.ycenter}, "
+            f"xpixels={self.xpixels}, ypixels={self.ypixels}, "
+            f"energy={energy_display} keV, wavelength={self.wavelength} Å>"
+        )
+
+    @staticmethod
+    def _to_int(v):
+        """Convert a value from YAML to an integer, handling common pitfalls."""
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in {"", "none", "null"}:
+                return None
+            try:
+                return int(float(v))
+            except ValueError:
+                raise ValueError(f"Cannot convert to int: {v}")
+        return int(v)
+
+    @classmethod
+    def _extract_section(cls, data: dict) -> dict:
+        if not isinstance(data, dict):
+            raise ValueError("Top-level YAML must be a mapping of keys to values.")
+        for key in ("ExperimentSetup", "experiment", "experiment_setup"):
+            section = data.get(key)
+            if isinstance(section, dict):
+                return section
+        if any(k in data for k in cls.REQUIRED_KEYS):
+            return data
+        for value in data.values():
+            if isinstance(value, dict) and any(k in value for k in cls.REQUIRED_KEYS):
+                return value
+        raise ValueError(
+            "Could not locate experiment setup configuration in YAML; "
+            "expected an 'ExperimentSetup' section or flat keys."
+        )
 
 
 class ReadFrame:
     """
-    Class to scan a directory for TIFF files matching a regex pattern,
-    extract scan_number and data_number, keep 2D intensity arrays per frame,
-    and return as a pandas or Dask DataFrame.
-
-    Parameters:
-        directory (str): Path to the directory containing TIFF files.
-        pattern (str, optional): Regex to match filenames and capture two groups:
-            scan_number and data_number. Defaults to r"^[^_]+_[^_]+_(\d{3})_(\d{3})_.*\\.tiff$".
-        use_dask (bool): Whether to use Dask for lazy loading (requires dask).
+    Scan a directory for TIFF files, capture scan/data numbers, store 2D arrays.
     """
     def __init__(self, directory, pattern=None, use_dask=False):
+        r"""
+        Parameters
+        ----------
+        directory : str
+            Root directory containing TIFF frames.
+        pattern : str | None, optional
+            Regex with two capturing groups for scan_number and data_number.
+            Defaults to r"^(?:[^_]+_)*(\d+)_(\d+)_.*\.tiff$".
+        use_dask : bool, optional
+            Enable Dask-backed loading when the dependency is available.
+        """
         self.directory = directory
         self.use_dask = use_dask and DASK_AVAILABLE
         if use_dask and not DASK_AVAILABLE:
             raise ImportError("Dask libraries not found. Install dask to use Dask functionality.")
-
-        default_pattern = r"^[^_]+_[^_]+_(\d{3})_(\d{3})_.*\.tiff$"
+        default_pattern = r"^(?:[^_]+_)*(\d+)_(\d+)_.*\.tiff$"
         pattern_str = pattern or default_pattern
         self._pattern = re.compile(pattern_str)
 
     def _process_file(self, fname):
-        """Read one TIFF, extract scan/data numbers, and keep full 2D intensity."""
         match = self._pattern.match(fname)
         if not match:
             return None
 
-        scan_number = int(match.group(1))
-        data_number = int(match.group(2))
-        path = os.path.join(self.directory, fname)
+        numeric_groups = [
+            g for g in (match.groups() or ())
+            if g and re.fullmatch(r"-?\d+", g)
+        ]
+        if not numeric_groups:
+            return None
 
-        # Load full image as 2D (or higher-dim if multi-page) array
+        path = os.path.join(self.directory, fname)
         img = tifffile.imread(path)
 
-        # Return one-row DataFrame with array in 'intensity' column
-        return pd.DataFrame([{  
-            'scan_number': scan_number,
-            'data_number': data_number,
-            'intensity': img
+        if len(numeric_groups) == 1:
+            scan_number = int(numeric_groups[0])
+            return pd.DataFrame([{
+                "scan_number": scan_number,
+                "intensity": img,
+            }])
+
+        scan_number = int(numeric_groups[0])
+        data_number = int(numeric_groups[1])
+        return pd.DataFrame([{
+            "scan_number": scan_number,
+            "data_number": data_number,
+            "intensity": img,
         }])
 
     def load_data(self):
-        """
-        Load data from all matching files.
-        Returns pd.DataFrame or dd.DataFrame with each row per file,
-        intensity column holding the full array.
-        """
         files = [f for f in os.listdir(self.directory) if self._pattern.match(f)]
+        if not files:
+            return pd.DataFrame(columns=["scan_number", "data_number", "intensity"])
+
+        valid_files = []
+        group_counts = set()
+        for fname in files:
+            sample_match = self._pattern.match(fname)
+            numeric_groups = [
+                g for g in (sample_match.groups() or ())
+                if g and re.fullmatch(r"-?\d+", g)
+            ] if sample_match else []
+            if not numeric_groups:
+                raise ValueError(
+                    f"Filename '{fname}' does not produce integer capture groups with the provided pattern."
+                )
+            group_counts.add(1 if len(numeric_groups) == 1 else 2)
+            valid_files.append(fname)
+
+        if not valid_files:
+            return pd.DataFrame(columns=["scan_number", "data_number", "intensity"])
+        if len(group_counts) != 1:
+            raise ValueError("Filename pattern yields inconsistent integer captures; ensure a uniform regex.")
+        single_group = group_counts.pop() == 1
+
         if self.use_dask:
-            delayed_dfs = [delayed(self._process_file)(f) for f in files]
-            # Provide metadata for Dask
-            meta = {
-                'scan_number': 'i8',
-                'data_number': 'i8',
-                'intensity': object
-            }
+            delayed_dfs = [delayed(self._process_file)(f) for f in valid_files]
+            if single_group:
+                meta = pd.DataFrame({
+                    "scan_number": pd.Series(dtype="int64"),
+                    "intensity": pd.Series(dtype="object"),
+                })
+            else:
+                meta = pd.DataFrame({
+                    "scan_number": pd.Series(dtype="int64"),
+                    "data_number": pd.Series(dtype="int64"),
+                    "intensity": pd.Series(dtype="object"),
+                })
             return dd.from_delayed(delayed_dfs, meta=meta)
-        else:
-            dfs = [self._process_file(f) for f in files]
-            dfs = [df for df in dfs if df is not None]
-            return pd.concat(dfs, ignore_index=True)
-        
-        
-        
-        
-        
-        
+
+        dfs = [self._process_file(f) for f in valid_files]
+        dfs = [df for df in dfs if df is not None]
+        if not dfs:
+            columns = ["scan_number", "intensity"] if single_group else ["scan_number", "data_number", "intensity"]
+            return pd.DataFrame(columns=columns)
+
+        result = pd.concat(dfs, ignore_index=True)
+        if single_group:
+            return result[["scan_number", "intensity"]]
+        return result
+
+
 def write_rsm_vtk(polydata, scalar_name, filename):
     """
     Write a vtk XML PolyData (.vtp) file from a vtkPolyData object.
@@ -166,14 +461,14 @@ def export_rsm_vtps(Q_samp, hkl, intensity, prefix):
       {prefix}_hkl.vtp : hkl-space point cloud
     """
     # flatten
-    points_q   = Q_samp.reshape(-1,3)
-    points_hkl = hkl.reshape(-1,3)
-    intens     = intensity.ravel()
+    points_q = Q_samp.reshape(-1, 3)
+    points_hkl = hkl.reshape(-1, 3)
+    intens = intensity.ravel()
 
     # common vtkPolyData setup for both
     def make_poly(points):
         poly = vtk.vtkPolyData()
-        pts  = vtk.vtkPoints()
+        pts = vtk.vtkPoints()
         pts.SetData(numpy_support.numpy_to_vtk(points, deep=True))
         poly.SetPoints(pts)
         return poly
@@ -189,14 +484,12 @@ def export_rsm_vtps(Q_samp, hkl, intensity, prefix):
     poly_h = make_poly(points_hkl)
     poly_h.GetPointData().SetScalars(arr_I)
     write_rsm_vtk(poly_h, 'intensity', f"{prefix}_hkl.vtp")
-    
-    
 
 
 def write_polydata_legacy(polydata, filename, binary=False):
     """
     Write a vtk PolyData to a legacy .vtk file.
-    
+
     Parameters:
         polydata : vtkPolyData
         filename : str, output path ending in .vtk
@@ -252,10 +545,7 @@ def write_rsm_volume_to_vtk(rsm, edges, filename, binary=False):
     writer = vtk.vtkRectilinearGridWriter()
     writer.SetFileName(filename)
     writer.SetInputData(grid)
-    if binary:
-        writer.SetFileTypeToBinary()
-    else:
-        writer.SetFileTypeToASCII()
+    writer.SetFileTypeToBinary() if binary else writer.SetFileTypeToASCII()
     writer.Write()
 
 
@@ -292,45 +582,34 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
             edges = np.empty(n + 1, dtype=np.float64)
             edges[1:-1] = 0.5 * (arr[1:] + arr[:-1])
             # use local spacing at each end
-            edges[0]  = arr[0]  - 0.5 * (arr[1]  - arr[0])
+            edges[0] = arr[0] - 0.5 * (arr[1] - arr[0])
             edges[-1] = arr[-1] + 0.5 * (arr[-1] - arr[-2])
             return edges
-        raise ValueError(f"Coordinate array must have length {n} (centers) or {n+1} (edges); got {m}.")
+        raise ValueError(f"Coordinate array must have length {n} or {n+1}; got {m}.")
 
-    x_edges = _as_edges(x_c, nx)
-    y_edges = _as_edges(y_c, ny)
-    z_edges = _as_edges(z_c, nz)
+    x_edges = _as_edges(x_c, nx); y_edges = _as_edges(y_c, ny); z_edges = _as_edges(z_c, nz)
 
     # Ensure each axis is ascending; if not, flip both coords and data
     rsm_work = np.asarray(rsm, dtype=np.float32)
-
     if x_edges[1] < x_edges[0]:
-        x_edges = x_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=0)
+        x_edges = x_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=0)
     if y_edges[1] < y_edges[0]:
-        y_edges = y_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=1)
+        y_edges = y_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=1)
     if z_edges[1] < z_edges[0]:
-        z_edges = z_edges[::-1].copy()
-        rsm_work = np.flip(rsm_work, axis=2)
+        z_edges = z_edges[::-1].copy(); rsm_work = np.flip(rsm_work, axis=2)
 
     # Basic sanity: positive widths
-    if np.any(np.diff(x_edges) <= 0) or np.any(np.diff(y_edges) <= 0) or np.any(np.diff(z_edges) <= 0):
+    if (np.diff(x_edges) <= 0).any() or (np.diff(y_edges) <= 0).any() or (np.diff(z_edges) <= 0).any():
         raise ValueError("Non-positive bin width detected after adjustment.")
 
     # Build rectilinear grid
     grid = vtk.vtkRectilinearGrid()
-    # Points = bins+1 along each axis
     grid.SetDimensions(nx + 1, ny + 1, nz + 1)
-    # Also set explicit extent in point-index space (optional but robust)
     grid.SetExtent(0, nx, 0, ny, 0, nz)
 
     # Coordinate arrays (vtkDoubleArray)
     def _vtk_coords(arr):
-        v = numpy_support.numpy_to_vtk(arr, deep=True)
-        # vtkRectilinearGrid ignores name here; fine to leave unset or set a label
-        return v
-
+        return numpy_support.numpy_to_vtk(arr, deep=True)
     grid.SetXCoordinates(_vtk_coords(x_edges))
     grid.SetYCoordinates(_vtk_coords(y_edges))
     grid.SetZCoordinates(_vtk_coords(z_edges))
@@ -338,10 +617,8 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
     # Cell data: sanitize + Fortran order so I (x) is fastest (VTK IJK)
     np.nan_to_num(rsm_work, copy=False)
     intens = rsm_work.ravel(order="F")
-    vtk_int = numpy_support.numpy_to_vtk(intens, deep=True)
-    vtk_int.SetName("intensity")
-    grid.GetCellData().SetScalars(vtk_int)
-    grid.GetCellData().SetActiveScalars("intensity")
+    vtk_int = numpy_support.numpy_to_vtk(intens, deep=True); vtk_int.SetName("intensity")
+    grid.GetCellData().SetScalars(vtk_int); grid.GetCellData().SetActiveScalars("intensity")
 
     # Writer
     if not filename.lower().endswith(".vtr"):
@@ -359,23 +636,16 @@ def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
         try:
             w.SetDataModeToAppended()
         except AttributeError:
-            try:
-                w.SetDataModeToBinary()
-            except AttributeError:
-                pass
+            try: w.SetDataModeToBinary()
+            except AttributeError: pass
         if compress:
-            try:
-                w.SetCompressorTypeToZLib()
+            try: w.SetCompressorTypeToZLib()
             except AttributeError:
-                try:
-                    w.SetCompressor(vtk.vtkZLibDataCompressor())
-                except Exception:
-                    pass
+                try: w.SetCompressor(vtk.vtkZLibDataCompressor())
+                except Exception: pass
     else:
-        try:
-            w.SetDataModeToAscii()
-        except AttributeError:
-            pass
+        try: w.SetDataModeToAscii()
+        except AttributeError: pass
 
     if w.Write() != 1:
         raise RuntimeError(f"Failed to write VTR file: {filename}")
@@ -385,10 +655,10 @@ def read_hdf5_tiff_data(directory):
     """
     Reads TIFF-like data stored at '/entry/data/data' from all HDF5 files in the specified directory,
     but only processes files that contain 'data' in the filename.
-    
+
     Parameters:
         directory (str): The path to the directory containing HDF5 files.
-    
+
     Returns:
         A dictionary containing the TIFF data from each file, with filenames as keys.
     """
@@ -414,13 +684,14 @@ def read_hdf5_tiff_data(directory):
 
     return tiff_data_dict
 
+
 def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, overwrite=False):
     """
     Saves the given TIFF data as an image file in the specified output directory.
-    
+
     The function converts the data to 32-bit unsigned integers while preserving the original data range.
     This means that no scaling is applied.
-    
+
     Parameters:
         tiff_data (numpy array): The TIFF data array.
         output_dir (str): The directory to save the TIFF file.
@@ -431,11 +702,11 @@ def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, ove
     # Create output filename with .tiff extension
     output_filename = os.path.splitext(original_filename)[0] + ".tiff"
     output_path = os.path.join(output_dir, output_filename)
-    
+
     if not overwrite and os.path.exists(output_path):
         print(f"File {output_path} already exists. Skipping save.")
         return
-    
+
     # Ensure the data is numeric
     if tiff_data.dtype.kind in {'U', 'S'}:
         print(f"Data is not numerical: {tiff_data.dtype}. Skipping conversion for {original_filename}.")
@@ -456,10 +727,8 @@ def save_tiff_data(tiff_data, output_dir, original_filename, normalize=True, ove
     except Exception as e:
         print(f"Failed to save {output_path}: {e}")
 
-def remove_extreme(
-    image: np.ndarray,
-    threshold: float
-) -> np.ndarray:
+
+def remove_extreme(image: np.ndarray, threshold: float) -> np.ndarray:
     """
     Replace every pixel > threshold by the average of its 8-connected neighbors,
     excluding any neighbors that are themselves > threshold.
@@ -485,42 +754,31 @@ def remove_extreme(
     mask = arr > threshold  # pixels to replace
 
     # Reflect‐pad for edge handling
-    p   = np.pad(arr, 1, mode='reflect')
-    pm  = np.pad(mask, 1, mode='reflect')
+    p = np.pad(arr, 1, mode='reflect')
+    pm = np.pad(mask, 1, mode='reflect')
 
     # Extract the 8 neighbors and their masks
     p00, m00 = p[0:-2, 0:-2], pm[0:-2, 0:-2]
     p01, m01 = p[0:-2, 1:-1], pm[0:-2, 1:-1]
-    p02, m02 = p[0:-2, 2:  ], pm[0:-2, 2:  ]
+    p02, m02 = p[0:-2, 2:],   pm[0:-2, 2:]
     p10, m10 = p[1:-1, 0:-2], pm[1:-1, 0:-2]
-    p12, m12 = p[1:-1, 2:  ], pm[1:-1, 2:  ]
-    p20, m20 = p[2:  , 0:-2], pm[2:  , 0:-2]
-    p21, m21 = p[2:  , 1:-1], pm[2:  , 1:-1]
-    p22, m22 = p[2:  , 2:  ], pm[2:  , 2:  ]
+    p12, m12 = p[1:-1, 2:],   pm[1:-1, 2:]
+    p20, m20 = p[2:, 0:-2],   pm[2:, 0:-2]
+    p21, m21 = p[2:, 1:-1],   pm[2:, 1:-1]
+    p22, m22 = p[2:, 2:],     pm[2:, 2:]
 
     # Sum only non-extreme neighbors
-    valid00 = (~m00).astype(float); valid01 = (~m01).astype(float)
-    valid02 = (~m02).astype(float); valid10 = (~m10).astype(float)
-    valid12 = (~m12).astype(float); valid20 = (~m20).astype(float)
-    valid21 = (~m21).astype(float); valid22 = (~m22).astype(float)
-
-    neighbor_sum = (
-        p00*valid00 + p01*valid01 + p02*valid02 +
-        p10*valid10 +          p12*valid12 +
-        p20*valid20 + p21*valid21 + p22*valid22
-    )
-    neighbor_count = (
-        valid00 + valid01 + valid02 +
-        valid10 +           valid12 +
-        valid20 + valid21 + valid22
-    )
+    valid = [~m for m in (m00, m01, m02, m10, m12, m20, m21, m22)]
+    vals =  [p00, p01, p02, p10, p12, p20, p21, p22]
+    neighbor_sum = sum(v.astype(float) * val.astype(float) for v, val in zip(vals, valid))
+    neighbor_count = sum(val.astype(float) for val in valid)
 
     # Compute mean, avoid division by zero
     nbr_mean = np.zeros_like(arr)
-    nonzero = neighbor_count > 0
-    nbr_mean[nonzero] = neighbor_sum[nonzero] / neighbor_count[nonzero]
+    nz = neighbor_count > 0
+    nbr_mean[nz] = neighbor_sum[nz] / neighbor_count[nz]
     # For isolated extremes with no valid neighbors, clamp to threshold
-    nbr_mean[~nonzero] = threshold
+    nbr_mean[~nz] = threshold
 
     # Build result
     result = arr.copy()
@@ -531,7 +789,8 @@ def remove_extreme(
         result = np.rint(result).astype(image.dtype)
 
     return result
-       
+
+
 def hdf2tiff(input_directory: str, output_directory: str, overwrite: bool = False, extreme_threshold: float = None):
     """
     Main function to read HDF5 files, extract TIFF data, optionally remove extreme pixel values,
@@ -556,3 +815,93 @@ def hdf2tiff(input_directory: str, output_directory: str, overwrite: bool = Fals
         if extreme_threshold is not None:
             data = remove_extreme(data, extreme_threshold)
         save_tiff_data(data, output_directory, file_name, overwrite=overwrite)
+
+
+class RSMDataloader_CMS:
+    """
+    Minimal loader for CMS workflows: attach ExperimentSetup metadata to TIFF frames
+    without UB handling and provide zeroed angle columns.
+    """
+    def __init__(
+        self,
+        setup_file: str,
+        tiff_dir: str,
+        *,
+        file_pattern: str = r".*_(\d+)_.*\.tiff$",
+        use_dask: bool = False,
+        selected_scans=None,
+        crop_window: tuple[tuple[int, int], tuple[int, int]] | None = None,
+    ):
+        self.setup_file = setup_file
+        self.tiff_dir = tiff_dir
+        self.file_pattern = file_pattern
+        self.use_dask = use_dask
+        self.selected_scans = selected_scans
+        self.crop_window = crop_window
+
+    @staticmethod
+    def _crop_image(image, crop_window):
+        arr = np.asarray(image)
+        if arr.ndim < 2:
+            raise ValueError("RSMDataloader_CMS: intensity frames must be at least 2D.")
+        (r0, r1), (c0, c1) = crop_window
+        if not (0 <= r0 < r1 <= arr.shape[0] and 0 <= c0 < c1 <= arr.shape[1]):
+            raise ValueError("RSMDataloader_CMS: crop_window is out of bounds for the intensity frame.")
+        return arr[r0:r1, c0:c1]
+
+    def load(self):
+        setup = ExperimentSetup.from_yaml(self.setup_file)
+        frames = ReadFrame(self.tiff_dir,
+                           pattern=self.file_pattern,
+                           use_dask=self.use_dask).load_data()
+
+        if DASK_AVAILABLE and isinstance(frames, dd.DataFrame):
+            frames = frames.compute()
+
+        if not isinstance(frames, pd.DataFrame) or frames.empty:
+            raise ValueError("RSMDataloader_CMS: no TIFF frames found.")
+
+        ordered_scans: list[int] | None = None
+        order_map: dict[int, int] | None = None
+        if self.selected_scans is not None:
+            try:
+                if isinstance(self.selected_scans, numbers.Integral):
+                    ordered_scans = [int(self.selected_scans)]
+                else:
+                    ordered_scans = [int(s) for s in self.selected_scans]
+            except TypeError:
+                ordered_scans = [int(self.selected_scans)]
+            wanted = set(ordered_scans)
+            frames = frames[frames["scan_number"].isin(wanted)]
+            if frames.empty:
+                raise ValueError("RSMDataloader_CMS: no TIFF frames match selected_scans.")
+            frames = frames.copy()
+            frames["scan_number"] = frames["scan_number"].astype(int)
+            missing = [scan for scan in ordered_scans if scan not in frames["scan_number"].unique()]
+            if missing:
+                raise ValueError(f"RSMDataloader_CMS: missing requested scan_number(s): {missing}")
+            order_map = {scan: idx for idx, scan in enumerate(ordered_scans)}
+            frames["_scan_order"] = frames["scan_number"].map(order_map)
+            frames = frames.sort_values("_scan_order", kind="stable").drop(columns="_scan_order")
+        else:
+            frames = frames.copy()
+            frames["scan_number"] = frames["scan_number"].astype(int)
+
+        intensities = frames["intensity"].tolist()
+        if self.crop_window is not None:
+            intensities = [self._crop_image(img, self.crop_window) for img in intensities]
+
+        df = pd.DataFrame(
+            {
+                "scan_number": frames["scan_number"],
+                "intensity": intensities,
+                "tth": 0.0,
+                "th": 0.0,
+                "chi": 0.0,
+                "phi": 0.0,
+            }
+        )
+        if order_map is not None:
+            df["_scan_order"] = df["scan_number"].map(order_map)
+            df = df.sort_values("_scan_order", kind="stable").drop(columns="_scan_order")
+        return setup, df.reset_index(drop=True)
