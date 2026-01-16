@@ -151,24 +151,22 @@ class RSMBuilder:
     # ───────────────────────────────────────────────────────────────────────────
     def compute_full(self, verbose: bool = True):
         """
-        Compute per-pixel Q (Å⁻¹) and HKL for each frame using xrayutilities.
+        Compute per-pixel Q (Å⁻¹) (and HKL when UB data is available) for each frame.
 
         Returns
         -------
-        Q_samp : (Nf, ny, nx, 3) float32  (Å⁻¹)
-        hkl    : (Nf, ny, nx, 3) float32
-        intensity : (Nf, ny, nx) float32
+        (Q_samp, hkl, intensity) when HKL is computed, otherwise (Q_samp, intensity).
         """
         df = self.df
         Nf = len(df)
         ny, nx = self.img_shape
 
         Q_samp = np.empty((Nf, ny, nx, 3), dtype=self.dtype)
-        HKL    = np.empty_like(Q_samp)
+        HKL = None
+        if self._compute_hkl:
+            HKL = np.empty_like(Q_samp)
+            UB2pi_default = self.UB if self.ub_includes_2pi else (_TWO_PI * self.UB)
         Icube  = np.empty((Nf, ny, nx), dtype=self.dtype)
-
-        UB2pi_default = (self.UB if self.ub_includes_2pi else (_TWO_PI * self.UB))
-        
 
         for idx, row in enumerate(df.itertuples(index=False)):
             # intensity array
@@ -194,29 +192,27 @@ class RSMBuilder:
             qx, qy, qz = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True)
             Qf = np.stack((qx, qy, qz), axis=-1).astype(self.dtype, copy=False)
 
-            # HKL via UB (2π convention for XU). Allow per-frame UB override.
-            UB_row = getattr(row, "ub", None)
-            # print(UB_row)
-            UB2pi = np.asarray(UB_row, dtype=np.float64) if UB_row is not None else UB2pi_default
-            if not self.ub_includes_2pi and UB_row is not None:
-                UB2pi = _TWO_PI * UB2pi
-            
-
-            h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
-            # manually apply -1 to h to convert from XU to HKL convention
-            HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
+            if self._compute_hkl:
+                UB_row = getattr(row, "ub", None)
+                UB2pi = np.asarray(UB_row, dtype=np.float64) if UB_row is not None else UB2pi_default
+                if not self.ub_includes_2pi and UB_row is not None:
+                    UB2pi = _TWO_PI * UB2pi
+                h, k, l = self.qconv.area(*angs, wl=self.qconv.wavelength, deg=True, UB=UB2pi)
+                HKLf = np.stack((h, k, l), axis=-1).astype(self.dtype, copy=False)
+                HKL[idx]    = HKLf
 
             Q_samp[idx] = Qf
-            HKL[idx]    = HKLf
             Icube[idx]  = I
 
             if verbose and (idx % 10 == 0 or idx == Nf - 1):
                 print(f"Processed {idx+1}/{Nf} frames", end="\r")
 
         self.Q_samp   = Q_samp
-        self.hkl      = HKL
         self.intensity = Icube
-        return Q_samp, HKL, Icube
+        self.hkl      = HKL if self._compute_hkl else None
+        if self._compute_hkl:
+            return Q_samp, HKL, Icube
+        return Q_samp, Icube
 
     # ───────────────────────────────────────────────────────────────────────────
     # Regridding with xrayutilities (3D)
