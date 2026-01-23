@@ -341,6 +341,60 @@ class RSMBuilder:
         grid = G.data.astype(self.dtype, copy=False)
         xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
         return grid, (xax, yax, zax)
+
+    def inverse_fft_grid(
+        self,
+        grid: np.ndarray,
+        axes: Tuple[Sequence[float], Sequence[float], Sequence[float]],
+        *,
+        apply_shift: bool = True,
+        scale_result: bool = True,
+    ) -> Tuple[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Inverse 3D FFT of a reciprocal-space grid with uniform axes."""
+        if grid.ndim != 3:
+            raise ValueError("grid must be a 3D array")
+        if len(axes) != 3:
+            raise ValueError("axes must be a length-3 tuple")
+
+        work = np.asarray(grid, dtype=np.complex128)
+        spacings: list[float] = []
+
+        for axis_idx, (ax_raw, name) in enumerate(zip(axes, ("x", "y", "z"))):
+            arr = np.asarray(ax_raw, dtype=np.float64)
+            if arr.ndim != 1:
+                raise ValueError(f"{name}-axis must be 1D")
+            if arr.size != work.shape[axis_idx]:
+                raise ValueError(f"{name}-axis length mismatch with grid dimension")
+            if arr.size < 2:
+                raise ValueError(f"{name}-axis must contain at least two points")
+
+            if arr[1] < arr[0]:
+                arr = arr[::-1].copy()
+                work = np.flip(work, axis=axis_idx)
+
+            diffs = np.diff(arr)
+            first = diffs[0]
+            if not np.allclose(diffs, first, rtol=1e-6, atol=1e-12):
+                raise ValueError(f"{name}-axis must be evenly spaced for FFT")
+
+            spacings.append(float(first))
+
+        if apply_shift:
+            work = np.fft.ifftshift(work)
+
+        real_space = np.fft.ifftn(work)
+        if apply_shift:
+            real_space = np.fft.fftshift(real_space)
+
+        if scale_result:
+            voxel = spacings[0] * spacings[1] * spacings[2]
+            real_space = real_space * (voxel * work.size) / (_TWO_PI ** 3)
+
+        rx = np.fft.fftshift(np.fft.fftfreq(work.shape[0], d=spacings[0] / _TWO_PI))
+        ry = np.fft.fftshift(np.fft.fftfreq(work.shape[1], d=spacings[1] / _TWO_PI))
+        rz = np.fft.fftshift(np.fft.fftfreq(work.shape[2], d=spacings[2] / _TWO_PI))
+
+        return real_space, (rx.astype(np.float64), ry.astype(np.float64), rz.astype(np.float64))
     # def regrid_xu(
     #     self,
     #     *,
