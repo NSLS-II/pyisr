@@ -10,6 +10,7 @@ import h5py
 from pathlib import Path
 import yaml
 import hdf5plugin
+from collections.abc import Sequence
 import vtk
 from vtk.util import numpy_support
 
@@ -831,6 +832,7 @@ class RSMDataloader_CMS:
         use_dask: bool = False,
         selected_scans=None,
         crop_window: tuple[tuple[int, int], tuple[int, int]] | None = None,
+        angle_overrides: dict[str, Sequence[float]] | None = None,
     ):
         self.setup_file = setup_file
         self.tiff_dir = tiff_dir
@@ -838,6 +840,34 @@ class RSMDataloader_CMS:
         self.use_dask = use_dask
         self.selected_scans = selected_scans
         self.crop_window = crop_window
+        self._angle_overrides = self._normalize_angle_overrides(angle_overrides)
+
+    @staticmethod
+    def _normalize_angle_overrides(angle_overrides: dict[str, Sequence[float]] | None):
+        if angle_overrides is None:
+            return {}
+        allowed = {"tth", "th", "chi", "phi"}
+        normalized: dict[str, np.ndarray] = {}
+        for key, values in angle_overrides.items():
+            if key not in allowed:
+                raise ValueError(
+                    f"RSMDataloader_CMS: unsupported override key '{key}'. Expected one of {sorted(allowed)}."
+                )
+            if isinstance(values, (str, bytes)):
+                raise TypeError(
+                    f"RSMDataloader_CMS: override for '{key}' must be a sequence of numeric values."
+                )
+            if not isinstance(values, Sequence) and not isinstance(values, np.ndarray):
+                raise TypeError(
+                    f"RSMDataloader_CMS: override for '{key}' must be a sequence of numeric values."
+                )
+            arr = np.asarray(values, dtype=float)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"RSMDataloader_CMS: override for '{key}' must be one-dimensional."
+                )
+            normalized[key] = arr.copy()
+        return normalized
 
     @staticmethod
     def _crop_image(image, crop_window):
@@ -904,4 +934,13 @@ class RSMDataloader_CMS:
         if order_map is not None:
             df["_scan_order"] = df["scan_number"].map(order_map)
             df = df.sort_values("_scan_order", kind="stable").drop(columns="_scan_order")
-        return setup, df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+        if self._angle_overrides:
+            rows = len(df)
+            for key, arr in self._angle_overrides.items():
+                if arr.size != rows:
+                    raise ValueError(
+                        f"RSMDataloader_CMS: override for '{key}' has length {arr.size}, expected {rows}."
+                    )
+                df.loc[:, key] = arr
+        return setup, df
