@@ -150,7 +150,7 @@ class ScanAngles:
                     continue
     
                 if in_data:
-                    if not line or (line.startswith('#') and not line[1].isdigit()):
+                    if not line or (line.startswith('#') and not line[1:2].isdigit()):
                        in_data = False
                        continue
                     parts = line.split()
